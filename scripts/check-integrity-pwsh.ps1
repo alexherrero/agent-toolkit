@@ -34,6 +34,25 @@ Get-ChildItem -LiteralPath $Scratch -Recurse -File -Filter SKILL.md -ErrorAction
         }
     }
 
+# ── 1b. Every installed agent .md file non-empty + has frontmatter ─────────
+Write-Host '  [integrity] installed agent .md files have valid frontmatter'
+foreach ($parent in '.claude/agents', '.gemini/agents') {
+    $full = Join-Path $Scratch $parent
+    if (-not (Test-Path -LiteralPath $full -PathType Container)) { continue }
+    Get-ChildItem -LiteralPath $full -File -Filter '*.md' -ErrorAction SilentlyContinue | ForEach-Object {
+        if ($_.Length -eq 0) {
+            Write-Error "FAIL: $($_.FullName) is empty"
+            $fail = $true
+            return
+        }
+        $firstLine = (Get-Content -LiteralPath $_.FullName -TotalCount 1)
+        if ($firstLine -notmatch '^---\s*$') {
+            Write-Error "FAIL: $($_.FullName) has no opening --- frontmatter delimiter"
+            $fail = $true
+        }
+    }
+}
+
 # ── 2. Pre-push hook integrity ─────────────────────────────────────────────
 $hook = Join-Path $Scratch '.git/hooks/pre-push'
 if (Test-Path -LiteralPath $hook) {
@@ -54,8 +73,8 @@ if (Test-Path -LiteralPath $hook) {
     }
 }
 
-# ── 3. No stray files under managed parents ────────────────────────────────
-Write-Host '  [integrity] no stray files under managed parents'
+# ── 3. No stray files under skill managed parents ──────────────────────────
+Write-Host '  [integrity] no stray files under skill managed parents'
 foreach ($parent in '.claude/skills', '.agent/skills', '.agents/skills') {
     $full = Join-Path $Scratch $parent
     if (-not (Test-Path -LiteralPath $full -PathType Container)) { continue }
@@ -67,7 +86,23 @@ foreach ($parent in '.claude/skills', '.agent/skills', '.agents/skills') {
                 $fail = $true
             }
         } else {
-            Write-Error "FAIL: $parent/$($_.Name) is a stray file (managed parents contain only <name>/SKILL.md subdirs)"
+            Write-Error "FAIL: $parent/$($_.Name) is a stray file (skill managed parents contain only <name>/SKILL.md subdirs)"
+            $fail = $true
+        }
+    }
+}
+
+# ── 4. No stray entries under agent managed parents ────────────────────────
+Write-Host '  [integrity] no stray entries under agent managed parents'
+foreach ($parent in '.claude/agents', '.gemini/agents') {
+    $full = Join-Path $Scratch $parent
+    if (-not (Test-Path -LiteralPath $full -PathType Container)) { continue }
+    Get-ChildItem -LiteralPath $full -Force | ForEach-Object {
+        if ($_.PSIsContainer) {
+            Write-Error "FAIL: $parent/$($_.Name)/ is a stray subdir (agent managed parents contain only <name>.md files)"
+            $fail = $true
+        } elseif ($_.Extension -ne '.md') {
+            Write-Error "FAIL: $parent/$($_.Name) is a stray non-.md file"
             $fail = $true
         }
     }

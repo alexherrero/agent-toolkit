@@ -38,6 +38,20 @@ while IFS= read -r f; do
   fi
 done < <(find "$SCRATCH" -path '*/skills/*/SKILL.md' 2>/dev/null)
 
+# ── 1b. Every installed agent .md (claude-code + gemini-cli paths) too ─────
+echo "  [integrity] installed agent .md files have valid frontmatter"
+while IFS= read -r f; do
+  if [[ ! -s "$f" ]]; then
+    echo "FAIL: $f is empty" >&2
+    fail=1
+    continue
+  fi
+  if ! head -1 "$f" | grep -qE '^---\s*$'; then
+    echo "FAIL: $f has no opening --- frontmatter delimiter" >&2
+    fail=1
+  fi
+done < <(find "$SCRATCH/.claude/agents" "$SCRATCH/.gemini/agents" -maxdepth 1 -name '*.md' -type f 2>/dev/null)
+
 # ── 2. Pre-push hook integrity (if present) ────────────────────────────────
 if [[ -e "$SCRATCH/.git/hooks/pre-push" ]]; then
   echo "  [integrity] .git/hooks/pre-push parses + is executable"
@@ -55,10 +69,10 @@ if [[ -e "$SCRATCH/.git/hooks/pre-push" ]]; then
   fi
 fi
 
-# ── 3. No stray files under managed-parent dirs ────────────────────────────
-# Each managed parent should contain only <skill-name>/SKILL.md children.
+# ── 3. No stray files under skill-managed-parent dirs ──────────────────────
+# Each skill managed parent should contain only <skill-name>/SKILL.md children.
 # Anything else is an installer regression.
-echo "  [integrity] no stray files under managed parents"
+echo "  [integrity] no stray files under skill managed parents"
 for parent in .claude/skills .agent/skills .agents/skills; do
   full="$SCRATCH/$parent"
   [[ -d "$full" ]] || continue
@@ -73,6 +87,25 @@ for parent in .claude/skills .agent/skills .agents/skills; do
     elif [[ -f "$entry" ]]; then
       # Stray file at the managed-parent level (not in a subdir)
       echo "FAIL: $parent/$name is a stray file (managed parents contain only <name>/SKILL.md subdirs)" >&2
+      fail=1
+    fi
+  done < <(find "$full" -mindepth 1 -maxdepth 1)
+done
+
+# ── 4. No stray non-.md files under agent-managed-parent dirs ──────────────
+# Agent managed parents (.claude/agents, .gemini/agents) contain single-file
+# <name>.md entries directly. Anything else (subdirs, non-.md files) is a regression.
+echo "  [integrity] no stray entries under agent managed parents"
+for parent in .claude/agents .gemini/agents; do
+  full="$SCRATCH/$parent"
+  [[ -d "$full" ]] || continue
+  while IFS= read -r entry; do
+    name="$(basename "$entry")"
+    if [[ -d "$entry" ]]; then
+      echo "FAIL: $parent/$name/ is a stray subdir (agent parents contain only <name>.md files)" >&2
+      fail=1
+    elif [[ -f "$entry" ]] && [[ "$entry" != *.md ]]; then
+      echo "FAIL: $parent/$name is a stray non-.md file" >&2
       fail=1
     fi
   done < <(find "$full" -mindepth 1 -maxdepth 1)

@@ -176,8 +176,10 @@ def check_contents(path: Path, fm: dict, bundle_dir: Path) -> None:
         # Resolve the primitive within the bundle.
         if kind == "skill":
             primitive_path = bundle_dir / "skills" / str(name) / "SKILL.md"
+        elif kind == "agent":
+            primitive_path = bundle_dir / "agents" / f"{name}.md"
         else:
-            # other kinds: not yet exercised in v0.1.0; check the dir exists
+            # other kinds: not yet exercised; check the dir exists
             primitive_path = bundle_dir / f"{kind}s" / str(name)
         if not primitive_path.exists():
             err(path, f"contents[{i}] resolves to non-existent path: {primitive_path.relative_to(ROOT)}")
@@ -200,7 +202,7 @@ def validate_bundle(bundle_md: Path) -> None:
     check_optional_scope(bundle_md, fm)
     check_contents(bundle_md, fm, bundle_dir)
 
-    # Validate primitives inside the bundle with relaxed schema
+    # Validate inner skills with relaxed schema
     for primitive_md in bundle_dir.rglob("SKILL.md"):
         if primitive_md == bundle_md:
             continue
@@ -210,6 +212,16 @@ def validate_bundle(bundle_md: Path) -> None:
         require_non_empty_string(primitive_md, fm2, "description")
         expected = primitive_md.parent.name
         check_name_matches_dir(primitive_md, fm2, expected)
+
+    # Validate inner agents (bundle_dir/agents/*.md) with relaxed schema
+    agents_dir = bundle_dir / "agents"
+    if agents_dir.is_dir():
+        for primitive_md in sorted(agents_dir.glob("*.md")):
+            fm2 = parse_frontmatter(primitive_md)
+            if fm2 is None:
+                continue
+            require_non_empty_string(primitive_md, fm2, "description")
+            check_name_matches_dir(primitive_md, fm2, primitive_md.stem)
 
 
 def validate_standalone_skill(skill_md: Path) -> None:
@@ -227,7 +239,24 @@ def validate_standalone_skill(skill_md: Path) -> None:
     check_optional_scope(skill_md, fm)
 
 
-# Future v0.2.0+: add validate_standalone_<kind> for command/agent/etc.
+def validate_standalone_agent(agent_md: Path) -> None:
+    fm = parse_frontmatter(agent_md)
+    if fm is None:
+        return
+    # For standalone agents, the manifest filename is <name>.md directly under
+    # agents/. The frontmatter `name` must match the basename without .md.
+    expected_name = agent_md.stem
+    require_non_empty_string(agent_md, fm, "description")
+    check_name_matches_dir(agent_md, fm, expected_name)
+    kind = require_kind(agent_md, fm)
+    if kind is not None and kind != "agent":
+        err(agent_md, f"file under agents/ has kind {kind!r}; must be 'agent'")
+    require_supported_hosts(agent_md, fm)
+    require_version(agent_md, fm)
+    check_optional_scope(agent_md, fm)
+
+
+# Future: add validate_standalone_<kind> for command / hook / mcp-server / etc.
 
 
 # ── main ──────────────────────────────────────────────────────────────────
@@ -240,8 +269,12 @@ def main() -> int:
     for skill_md in sorted((ROOT / "skills").glob("*/SKILL.md")):
         validate_standalone_skill(skill_md)
 
-    # Other standalone kinds (v0.1.0 ships none; future-proofing the script):
-    # for kind in ("command", "agent", ...):
+    # Standalone agents
+    for agent_md in sorted((ROOT / "agents").glob("*.md")):
+        validate_standalone_agent(agent_md)
+
+    # Other standalone kinds: future-proofing — none ship yet.
+    # for kind in ("command", "hook", ...):
     #     for path in ...
 
     if errors:
@@ -249,7 +282,12 @@ def main() -> int:
         return 1
     bundle_count = len(list((ROOT / "bundles").glob("*/bundle.md")))
     skill_count = len(list((ROOT / "skills").glob("*/SKILL.md")))
-    print(f"validate-manifests: clean ({bundle_count} bundle(s), {skill_count} standalone skill(s))")
+    agent_count = len(list((ROOT / "agents").glob("*.md")))
+    print(
+        f"validate-manifests: clean "
+        f"({bundle_count} bundle(s), {skill_count} standalone skill(s), "
+        f"{agent_count} standalone agent(s))"
+    )
     return 0
 
 

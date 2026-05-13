@@ -25,10 +25,16 @@ expected=(
   .claude/skills/example-skill/SKILL.md
   .agent/skills/example-skill/SKILL.md
   .agents/skills/example-skill/SKILL.md
-  # Standalone: pii-scrubber across 3 hosts
+  # Standalone skill: pii-scrubber across 3 hosts
   .claude/skills/pii-scrubber/SKILL.md
   .agent/skills/pii-scrubber/SKILL.md
   .agents/skills/pii-scrubber/SKILL.md
+  # Standalone agent: _fixture-test-agent — claude-code + gemini-cli are
+  # single-file destinations; antigravity wraps the agent as a skill.
+  # NOTE: temporary fixture for plan #3 task 1; replaced by evaluator in task 2.
+  .claude/agents/_fixture-test-agent.md
+  .agent/skills/_fixture-test-agent/SKILL.md
+  .gemini/agents/_fixture-test-agent.md
   # Pre-push hook
   .git/hooks/pre-push
 )
@@ -94,8 +100,16 @@ if grep -qE "created .claude/skills/(example-skill|pii-scrubber)" "$SCRATCH/.rer
   echo "FAIL: re-run recreated a skill that already existed (should be 'kept')" >&2
   exit 1
 fi
+if grep -qE "created .claude/agents/_fixture-test-agent" "$SCRATCH/.rerun.log"; then
+  echo "FAIL: re-run recreated an agent that already existed (should be 'kept')" >&2
+  exit 1
+fi
 if ! grep -qE "kept    .claude/skills/(example-skill|pii-scrubber)" "$SCRATCH/.rerun.log"; then
   echo "FAIL: re-run did not emit 'kept' messages for existing skills" >&2
+  exit 1
+fi
+if ! grep -qE "kept    .claude/agents/_fixture-test-agent" "$SCRATCH/.rerun.log"; then
+  echo "FAIL: re-run did not emit 'kept' message for the fixture agent" >&2
   exit 1
 fi
 

@@ -12,6 +12,7 @@
 # Options:
 #   --bundle <name>          install one bundle (instead of all)
 #   --skill <name>           install one standalone skill (instead of all)
+#   --agent <name>           install one standalone agent (instead of all)
 #   --all                    install everything (default)
 #   --update                 true-sync; wipe and recreate managed dirs
 #   --no-pre-push-hook       skip pre-push hook installation
@@ -24,6 +25,7 @@ TARGET=""
 MODE_ALL=1
 SELECT_BUNDLE=""
 SELECT_SKILL=""
+SELECT_AGENT=""
 UPDATE_MODE=0
 NO_PRE_PUSH_HOOK=0
 
@@ -33,7 +35,7 @@ print_help() {
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --all) MODE_ALL=1; SELECT_BUNDLE=""; SELECT_SKILL=""; shift ;;
+        --all) MODE_ALL=1; SELECT_BUNDLE=""; SELECT_SKILL=""; SELECT_AGENT=""; shift ;;
         --bundle)
             MODE_ALL=0; SELECT_BUNDLE="${2:-}"
             [[ -z "$SELECT_BUNDLE" ]] && { echo "--bundle requires a name" >&2; exit 2; }
@@ -42,6 +44,11 @@ while [[ $# -gt 0 ]]; do
         --skill)
             MODE_ALL=0; SELECT_SKILL="${2:-}"
             [[ -z "$SELECT_SKILL" ]] && { echo "--skill requires a name" >&2; exit 2; }
+            shift 2
+            ;;
+        --agent)
+            MODE_ALL=0; SELECT_AGENT="${2:-}"
+            [[ -z "$SELECT_AGENT" ]] && { echo "--agent requires a name" >&2; exit 2; }
             shift 2
             ;;
         --update) UPDATE_MODE=1; shift ;;
@@ -107,10 +114,19 @@ echo "==> agent-toolkit install: $TARGET"
 # Managed parents the toolkit creates in a target. Each installed
 # customization lands under one of these; wiping them on --update gives
 # true-sync semantics.
+#
+# Note on .claude/agents and .gemini/agents: these parents are also written
+# to by the sibling agentic-harness installer (for explorer / adversarial-
+# reviewer / documenter). When both repos are installed into the same target,
+# users must run BOTH installers (in either order) to land the full set; the
+# LATER-run installer's --update wipes the parent before recreating from its
+# own source. Documented in agent-toolkit/wiki/reference/Installer-CLI.md.
 MANAGED_PARENTS=(
     .claude/skills
     .agent/skills
     .agents/skills
+    .claude/agents
+    .gemini/agents
 )
 EMPTY_PARENT_CANDIDATES=(
     .agents
@@ -158,6 +174,38 @@ install_skill() {
                 ;;
             *)
                 echo "    warning: unknown host '$host' for skill '$name' — skipped" >&2
+                ;;
+        esac
+    done
+}
+
+# install_agent <source-file> <agent-name> <comma-separated-hosts>
+# Dispatches an agent to per-host destinations. Source is a single .md file
+# (agents are file-level, not dir-level — except for antigravity which has
+# no first-class sub-agent surface and gets the agent wrapped as a skill
+# at .agent/skills/<name>/SKILL.md per the locked per-host paths table).
+install_agent() {
+    local src_file="$1" name="$2" hosts="$3"
+    IFS=',' read -ra host_array <<< "$hosts"
+    local host
+    for host in "${host_array[@]}"; do
+        host="${host// /}"
+        [[ -z "$host" ]] && continue
+        case "$host" in
+            claude-code)
+                mkdir -p .claude/agents
+                cp_managed "$src_file" ".claude/agents/$name.md"
+                ;;
+            antigravity)
+                mkdir -p ".agent/skills/$name"
+                cp_managed "$src_file" ".agent/skills/$name/SKILL.md"
+                ;;
+            gemini-cli)
+                mkdir -p .gemini/agents
+                cp_managed "$src_file" ".gemini/agents/$name.md"
+                ;;
+            *)
+                echo "    warning: unknown host '$host' for agent '$name' — skipped" >&2
                 ;;
         esac
     done
@@ -218,7 +266,7 @@ install_bundles() {
             continue
         fi
 
-        # v0.1.0: handle skill kind inside bundles. Other kinds are stubs.
+        # v0.6.0: handle skill + agent kinds inside bundles. Other kinds are stubs.
         if [[ -d "$bundle_dir/skills" ]]; then
             local skill_dir skill_name
             for skill_dir in "$bundle_dir"/skills/*/; do
@@ -227,8 +275,16 @@ install_bundles() {
                 install_skill "${skill_dir%/}" "$skill_name" "$hosts"
             done
         fi
-        # Future: iterate other kind subdirs (commands/, agents/, hooks/, etc.)
-        for other in commands agents hooks mcp-servers status-line output-styles workflows rules snippets settings-fragments; do
+        if [[ -d "$bundle_dir/agents" ]]; then
+            local agent_md inner_agent_name
+            for agent_md in "$bundle_dir"/agents/*.md; do
+                [[ -f "$agent_md" ]] || continue
+                inner_agent_name="$(basename "$agent_md" .md)"
+                install_agent "$agent_md" "$inner_agent_name" "$hosts"
+            done
+        fi
+        # Future: iterate other kind subdirs (commands/, hooks/, etc.)
+        for other in commands hooks mcp-servers status-line output-styles workflows rules snippets settings-fragments; do
             if [[ -d "$bundle_dir/$other" ]] && [[ -n "$(ls -A "$bundle_dir/$other" 2>/dev/null)" ]]; then
                 warn_unsupported_kind "$other"
             fi
@@ -261,10 +317,34 @@ install_standalone_skills() {
     done
 }
 
+# ── install standalone agents ─────────────────────────────────────────────
+install_standalone_agents() {
+    local agent_md agent_name hosts kind
+    for agent_md in "$TOOLKIT_ROOT"/agents/*.md; do
+        [[ -f "$agent_md" ]] || continue
+        agent_name="$(basename "$agent_md" .md)"
+        if [[ $MODE_ALL -eq 0 && -n "$SELECT_AGENT" && "$SELECT_AGENT" != "$agent_name" ]]; then
+            continue
+        fi
+        kind="$(get_field "$agent_md" kind)"
+        if [[ "$kind" != "agent" ]]; then
+            echo "    warning: $agent_md has kind '$kind' (expected 'agent') — skipped" >&2
+            continue
+        fi
+        hosts="$(get_field "$agent_md" supported_hosts)"
+        if [[ -z "$hosts" ]]; then
+            echo "    warning: agent '$agent_name' has no supported_hosts — skipped" >&2
+            continue
+        fi
+        echo "==> installing agent: $agent_name"
+        install_agent "$agent_md" "$agent_name" "$hosts"
+    done
+}
+
 # ── warn about other unsupported kinds at top level ───────────────────────
 warn_unsupported_top_level() {
     local kind
-    for kind in commands agents hooks mcp-servers status-line output-styles workflows rules snippets settings-fragments; do
+    for kind in commands hooks mcp-servers status-line output-styles workflows rules snippets settings-fragments; do
         if [[ -d "$TOOLKIT_ROOT/$kind" ]] && find "$TOOLKIT_ROOT/$kind" -mindepth 1 -not -name '.gitkeep' -print -quit 2>/dev/null | grep -q .; then
             warn_unsupported_kind "$kind"
         fi
@@ -278,6 +358,10 @@ fi
 
 if [[ $MODE_ALL -eq 1 || -n "$SELECT_SKILL" ]]; then
     install_standalone_skills
+fi
+
+if [[ $MODE_ALL -eq 1 || -n "$SELECT_AGENT" ]]; then
+    install_standalone_agents
 fi
 
 if [[ $MODE_ALL -eq 1 ]]; then

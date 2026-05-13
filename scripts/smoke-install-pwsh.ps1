@@ -27,6 +27,12 @@ try {
         '.claude/skills/pii-scrubber/SKILL.md',
         '.agent/skills/pii-scrubber/SKILL.md',
         '.agents/skills/pii-scrubber/SKILL.md',
+        # Standalone agent: _fixture-test-agent (temporary fixture for plan #3
+        # task 1; replaced by evaluator in task 2). claude-code + gemini-cli
+        # are single-file; antigravity wraps as a skill.
+        '.claude/agents/_fixture-test-agent.md',
+        '.agent/skills/_fixture-test-agent/SKILL.md',
+        '.gemini/agents/_fixture-test-agent.md',
         '.git/hooks/pre-push'
     )
     $fail = $false
@@ -70,6 +76,9 @@ try {
     $rerun = Get-Content (Join-Path $scratch '.rerun.log') -Raw
     if ($rerun -match 'created .claude/skills/(example-skill|pii-scrubber)') {
         throw 're-run recreated a skill (should be kept)'
+    }
+    if ($rerun -match 'created .claude/agents/_fixture-test-agent') {
+        throw 're-run recreated the fixture agent (should be kept)'
     }
 
     # ── --update ───────────────────────────────────────────────────────────

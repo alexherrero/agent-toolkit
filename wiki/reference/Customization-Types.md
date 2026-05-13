@@ -19,13 +19,14 @@ The 12 primitive types `agent-toolkit` recognizes via its `kind` field. Each map
 | `snippet` | `snippets/` | Fragment appended to `AGENTS.md` / `CLAUDE.md` at install time | all 3 |
 | `settings-fragment` | `settings-fragments/` | JSON fragment merged into host `settings.json` | claude-code, gemini-cli (Antigravity: TBD) |
 
-## v0.1.0 implementation status
+## Implementation status
 
 | Kind | Installer support | Notes |
 |---|---|---|
-| `bundle` | ✅ (dispatches to inner primitives) | Only `skill` kind inside bundles is fully wired in v0.1.0 |
-| `skill` | ✅ | Full dispatch to `.claude/skills/<name>/`, `.agent/skills/<name>/`, `.agents/skills/<name>/` |
-| All others | ⚠️ Warning "not yet supported in v0.1.0 — skipped" | Toolkit v0.2.0+ adds them as the catalog grows |
+| `bundle` | ✅ (dispatches to inner primitives) | `skill` and `agent` kinds inside bundles are wired as of v0.6.0 |
+| `skill` | ✅ (v0.5.0) | Full dispatch to `.claude/skills/<name>/`, `.agent/skills/<name>/`, `.agents/skills/<name>/` |
+| `agent` | ✅ (v0.6.0) | Full dispatch to `.claude/agents/<name>.md`, `.agent/skills/<name>/SKILL.md` (sub-agent-as-skill wrap for Antigravity), `.gemini/agents/<name>.md` |
+| All others | ⚠️ Warning "not yet supported — skipped" | Future toolkit versions add them as the catalog grows |
 
 When a customization with an unsupported kind is encountered, the installer logs a warning and continues. The manifest still passes validation — the `kind` enum recognizes the value, the dispatch logic just doesn't have a handler yet.
 
