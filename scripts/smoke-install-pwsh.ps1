@@ -27,12 +27,11 @@ try {
         '.claude/skills/pii-scrubber/SKILL.md',
         '.agent/skills/pii-scrubber/SKILL.md',
         '.agents/skills/pii-scrubber/SKILL.md',
-        # Standalone agent: _fixture-test-agent (temporary fixture for plan #3
-        # task 1; replaced by evaluator in task 2). claude-code + gemini-cli
-        # are single-file; antigravity wraps as a skill.
-        '.claude/agents/_fixture-test-agent.md',
-        '.agent/skills/_fixture-test-agent/SKILL.md',
-        '.gemini/agents/_fixture-test-agent.md',
+        # Standalone agent: evaluator. claude-code + gemini-cli are
+        # single-file; antigravity wraps the agent as a skill.
+        '.claude/agents/evaluator.md',
+        '.agent/skills/evaluator/SKILL.md',
+        '.gemini/agents/evaluator.md',
         '.git/hooks/pre-push'
     )
     $fail = $false
@@ -77,8 +76,8 @@ try {
     if ($rerun -match 'created .claude/skills/(example-skill|pii-scrubber)') {
         throw 're-run recreated a skill (should be kept)'
     }
-    if ($rerun -match 'created .claude/agents/_fixture-test-agent') {
-        throw 're-run recreated the fixture agent (should be kept)'
+    if ($rerun -match 'created .claude/agents/evaluator') {
+        throw 're-run recreated the evaluator agent (should be kept)'
     }
 
     # ── --update ───────────────────────────────────────────────────────────
