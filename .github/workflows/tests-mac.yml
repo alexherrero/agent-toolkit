@@ -1,0 +1,29 @@
+name: "[T] Mac Tests"
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  install-smoke:
+    name: install-smoke
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      # macos-latest ships python3 and pwsh 7+ preinstalled.
+      - name: Install Python deps
+        run: python3 -m pip install --break-system-packages pyyaml
+      - name: Run smoke-install (bash) + post-install integrity
+        run: bash scripts/smoke-install-bash.sh
+      - name: Validate manifests
+        run: python3 scripts/validate-manifests.py
+      - name: bash -n on every .sh
+        run: bash scripts/check-syntax.sh
+      - name: AST-parse every .ps1
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/check-syntax.ps1
+      - name: Verify lib/install/ checksums
+        run: bash scripts/check-lib-parity.sh
+      - name: Run check-no-pii.sh
+        run: bash scripts/check-no-pii.sh --all

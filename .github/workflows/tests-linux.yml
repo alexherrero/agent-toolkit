@@ -1,0 +1,66 @@
+name: "[T] Linux Tests"
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  install-smoke:
+    name: install-smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Python deps
+        run: pip install pyyaml
+      - name: Run smoke-install (bash) + post-install integrity
+        run: bash scripts/smoke-install-bash.sh
+
+  validate:
+    name: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install Python deps
+        run: pip install pyyaml
+      - name: Validate manifests (frontmatter + schema)
+        run: python3 scripts/validate-manifests.py
+
+  syntax:
+    name: syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: bash -n on every .sh
+        run: bash scripts/check-syntax.sh
+      - name: AST-parse every .ps1 (pwsh ships on ubuntu-latest)
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/check-syntax.ps1
+
+  lib-parity:
+    name: lib-parity
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify lib/install/ matches committed checksums
+        run: bash scripts/check-lib-parity.sh
+
+  pii-guardrails:
+    name: pii-guardrails
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run check-no-pii.sh (regex scanner)
+        run: bash scripts/check-no-pii.sh --all
+      - name: Run gitleaks (industry-standard secret scanner)
+        uses: gitleaks/gitleaks-action@v2
+        with:
+          config-path: .gitleaks.toml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
