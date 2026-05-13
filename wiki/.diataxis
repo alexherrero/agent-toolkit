@@ -1,0 +1,8 @@
+# Diátaxis marker
+
+The presence of this file signals that `wiki/` follows the Diátaxis four-mode
+convention (tutorials / how-to / reference / explanation) and may be subject
+to `check-wiki.py --strict` linting.
+
+See agent-toolkit/wiki/explanation/decisions/ for the toolkit's ADRs once
+they land (task 6 of v0.1.0 plan).

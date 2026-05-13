@@ -1,0 +1,23 @@
+# macOS
+.DS_Store
+
+# Editor scratch
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# Language artifacts (defensive — toolkit content is markdown + shell, but
+# bundles or skills may eventually include scripts that drag these in)
+node_modules/
+__pycache__/
+*.pyc
+
+# Local env
+.env
+.env.local
+
+# Local override / scratch
+.pii-overrides-local.log
+.pii-scrubber-pending.txt

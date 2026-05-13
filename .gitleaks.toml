@@ -1,0 +1,32 @@
+title = "agent-toolkit gitleaks config"
+
+# Inherit gitleaks's default ruleset for common credential shapes
+# (AWS keys, GitHub tokens, generic API keys, JWT, etc.)
+[extend]
+useDefault = true
+
+# Allowlist patterns known-safe in agent-toolkit
+[allowlist]
+description = "Patterns that are known-safe in agent-toolkit (public repo, owned by alexherrero)"
+
+regexes = [
+    # The public GitHub handle appears in URLs, README, AGENTS.md
+    '''alexherrero''',
+    # RFC 2606 reserved domains for documentation examples
+    '''@example\.(com|org|net)''',
+    # NANP reserved phone-number prefix for documentation
+    '''555-01[0-9]{2}''',
+    # Common placeholder strings — these are not credentials
+    '''<API_KEY>''',
+    '''<TOKEN>''',
+    '''sk-abc123def456ghi789jkl''',          # documentation example in CONTRIBUTING / scrubber skill
+]
+
+paths = [
+    # The gitleaks config itself includes example patterns
+    '''\.gitleaks\.toml''',
+    # The scrubber skill includes example PII patterns in its workflow doc
+    '''skills/pii-scrubber/pii-scrubber\.md''',
+    # CONTRIBUTING includes example patterns in its NOT-to-commit list
+    '''CONTRIBUTING\.md''',
+]
