@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/commit-on-stop.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

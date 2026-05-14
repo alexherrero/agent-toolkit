@@ -32,10 +32,10 @@ try {
         '.claude/agents/evaluator.md',
         '.agent/skills/evaluator/SKILL.md',
         '.gemini/agents/evaluator.md',
-        # Standalone hook: _fixture-test-hook (claude-code only, v0.7.0).
-        # Temporary fixture for plan #4 task 1; replaced by the three real
-        # base hooks in task 2.
-        '.claude/hooks/_fixture-test-hook.ps1',
+        # Standalone hooks (claude-code only, v0.7.0).
+        '.claude/hooks/kill-switch.ps1',
+        '.claude/hooks/steer.ps1',
+        '.claude/hooks/commit-on-stop.ps1',
         '.claude/settings.json',
         '.git/hooks/pre-push'
     )
@@ -83,6 +83,9 @@ try {
     }
     if ($rerun -match 'created .claude/agents/evaluator') {
         throw 're-run recreated the evaluator agent (should be kept)'
+    }
+    if ($rerun -match 'created .claude/hooks/(kill-switch|steer|commit-on-stop)') {
+        throw 're-run recreated a hook script (should be kept)'
     }
     if ($rerun -match 'merged  .claude/settings.json') {
         throw 're-run re-merged settings.json (should report kept)'

@@ -20,6 +20,8 @@ regexes = [
     '''<API_KEY>''',
     '''<TOKEN>''',
     '''sk-abc123def456ghi789jkl''',          # documentation example in CONTRIBUTING / scrubber skill
+    # Synthetic identity used by the commit-on-stop hook for namespaced commits
+    '''@agent-toolkit\.local''',
 ]
 
 paths = [

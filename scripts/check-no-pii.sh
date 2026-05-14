@@ -87,6 +87,7 @@ ALLOWLIST_PATTERNS=(
     '555-01[0-9]{2}'                    # NANP reserved phone-number prefix
     'sk-abc123def456ghi789jkl'          # documentation example
     'AKIA[A-Z0-9]{0,15}EXAMPLE'         # documentation example
+    '@agent-toolkit\.local'             # synthetic identity used by commit-on-stop hook
 )
 
 # ── file collection ───────────────────────────────────────────────────────

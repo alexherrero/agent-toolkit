@@ -34,10 +34,10 @@ expected=(
   .claude/agents/evaluator.md
   .agent/skills/evaluator/SKILL.md
   .gemini/agents/evaluator.md
-  # Standalone hook: _fixture-test-hook — claude-code only (v0.7.0).
-  # NOTE: temporary fixture for plan #4 task 1; replaced by the three real
-  # base hooks (kill-switch/steer/commit-on-stop) in task 2.
-  .claude/hooks/_fixture-test-hook.sh
+  # Standalone hooks — claude-code only (v0.7.0).
+  .claude/hooks/kill-switch.sh
+  .claude/hooks/steer.sh
+  .claude/hooks/commit-on-stop.sh
   .claude/settings.json
   # Pre-push hook
   .git/hooks/pre-push
@@ -106,6 +106,11 @@ if grep -qE "created .claude/skills/(example-skill|pii-scrubber)" "$SCRATCH/.rer
 fi
 if grep -qE "created .claude/agents/evaluator" "$SCRATCH/.rerun.log"; then
   echo "FAIL: re-run recreated an agent that already existed (should be 'kept')" >&2
+  exit 1
+fi
+# Same for hooks: re-run should not "create" scripts that already exist.
+if grep -qE "created .claude/hooks/(kill-switch|steer|commit-on-stop)" "$SCRATCH/.rerun.log"; then
+  echo "FAIL: re-run recreated a hook script that already existed (should be 'kept')" >&2
   exit 1
 fi
 if ! grep -qE "kept    .claude/skills/(example-skill|pii-scrubber)" "$SCRATCH/.rerun.log"; then

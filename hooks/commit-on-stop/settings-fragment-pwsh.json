@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "matcher": ".*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "pwsh -NoProfile -File .claude/hooks/commit-on-stop.ps1",
+            "timeout": 30
+          }
+        ]
+      }
+    ]
+  }
+}

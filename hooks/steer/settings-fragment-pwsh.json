@@ -6,7 +6,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash .claude/hooks/_fixture-test-hook.sh"
+            "command": "pwsh -NoProfile -File .claude/hooks/steer.ps1",
+            "timeout": 5
           }
         ]
       }
