@@ -14,6 +14,7 @@ Dogfood documentation for `agent-toolkit` — a personal collection of agent cus
 - [Install agent-toolkit into a project](Install-Into-Project) — drop the shipped customizations into a target project.
 - [Add a skill](Add-A-Skill) — add a new standalone skill.
 - [Add a bundle](Add-A-Bundle) — package multiple primitives that ship together.
+- [Use the evaluator](Use-The-Evaluator) — dispatch the `evaluator` sub-agent for PASS / NEEDS_WORK grading against a precise rubric.
 
 ## 📖 Looking up a detail?
 
@@ -29,6 +30,7 @@ Dogfood documentation for `agent-toolkit` — a personal collection of agent cus
 ### Architecture decisions
 
 - [ADR 0001 — agent-toolkit purpose, scope, public-with-PII-guardrails](0001-agent-toolkit-purpose)
+- [ADR 0002 — evaluator sub-agent design](0002-evaluator-design)
 
 ## Conventions
 

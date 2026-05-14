@@ -38,9 +38,9 @@ When a customization with an unsupported kind is encountered, the installer logs
 |---|---|
 | An agent-triggered helper that runs on a keyword or context match | `skill` |
 | A user-typed `/something` slash command | `command` |
-| A specialized agent for a specific kind of task (e.g. `evaluator`, `explorer`) | `agent` |
+| A specialized agent for a specific kind of task (e.g. [`evaluator`](Use-The-Evaluator), `explorer`) | `agent` |
 
-A single concept can ship as multiple primitives — e.g. an `evaluator` agent + a `quality-gates` bundle that references it from a skill that auto-invokes it.
+A single concept can ship as multiple primitives — e.g. an [`evaluator`](Use-The-Evaluator) agent + a `quality-gates` bundle that references it from a skill that auto-invokes it.
 
 ### When to use a `bundle` vs. multiple standalone primitives
 

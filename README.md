@@ -11,15 +11,16 @@ Personal collection of agent customizations — skills, sub-agents, hooks, MCP s
 [![Works with Antigravity](https://img.shields.io/badge/works%20with-Antigravity-7C3AED?style=flat)](#)
 [![Works with Gemini CLI](https://img.shields.io/badge/works%20with-Gemini%20CLI-4285F4?style=flat)](#)
 
-## What's inside (v0.1.0)
+## What's inside (v0.6.0)
 
-Three skills + one reference bundle:
+Three skills + one agent + one reference bundle:
 
 | Customization | Kind | What it does |
 |---|---|---|
 | [`pii-scrubber`](skills/pii-scrubber/SKILL.md) | skill | Agent-facing PII guardrail — scans the current git diff before commit/push, presents findings, offers redactions. Companion to the pre-push hook. |
 | [`dependabot-fixer`](skills/dependabot-fixer/SKILL.md) | skill | Fix breakage on a Dependabot PR. Reads failing CI logs, applies a bounded fix loop, pushes commits to the Dependabot branch, comments residual risks. Never merges. (Migrated from agentic-harness v1.x.) |
 | [`ship-release`](skills/ship-release/SKILL.md) | skill | Cut a tagged GitHub release with semver-driven version bumps from conventional commits. Writes CHANGELOG, tags, pushes, creates the release. (Migrated from agentic-harness v1.x.) |
+| [`evaluator`](agents/evaluator.md) | agent | Read-only fresh-context grader. Caller supplies ARTIFACT + RUBRIC; evaluator returns PASS / NEEDS_WORK + per-rubric-item reasoning. Augments the harness's `adversarial-reviewer` at `/review`; consumed by the future design skill + quality-gates bundle. (New in v0.6.0.) |
 | [`example-bundle`](bundles/example-bundle/bundle.md) | bundle | Reference skeleton showing how to package a multi-primitive customization. Safe to delete in your fork. |
 
 ## How it works
@@ -83,6 +84,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the override protocol.
 - [Tutorial 1 — Your first customization](wiki/tutorials/01-First-Customization.md) (10-minute walkthrough)
 - [How to add a skill](wiki/how-to/Add-A-Skill.md)
 - [How to add a bundle](wiki/how-to/Add-A-Bundle.md)
+- [How to use the evaluator](wiki/how-to/Use-The-Evaluator.md) — dispatch the `evaluator` sub-agent for PASS / NEEDS_WORK grading.
 
 ## Status
 
