@@ -27,6 +27,13 @@ try {
         '.claude/skills/pii-scrubber/SKILL.md',
         '.agent/skills/pii-scrubber/SKILL.md',
         '.agents/skills/pii-scrubber/SKILL.md',
+        # Standalone skill: design (scaffold only in v0.7.0+; bodies in tasks 2-4 of plan #6).
+        '.claude/skills/design/SKILL.md',
+        '.claude/skills/design/templates/design-doc.md',
+        '.agent/skills/design/SKILL.md',
+        '.agent/skills/design/templates/design-doc.md',
+        '.agents/skills/design/SKILL.md',
+        '.agents/skills/design/templates/design-doc.md',
         # Standalone agent: evaluator. claude-code + gemini-cli are
         # single-file; antigravity wraps the agent as a skill.
         '.claude/agents/evaluator.md',
