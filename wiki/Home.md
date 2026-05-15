@@ -16,6 +16,7 @@ Dogfood documentation for `agent-toolkit` — a personal collection of agent cus
 - [Add a bundle](Add-A-Bundle) — package multiple primitives that ship together.
 - [Use the evaluator](Use-The-Evaluator) — dispatch the `evaluator` sub-agent for PASS / NEEDS_WORK grading against a precise rubric.
 - [Use the base hooks](Use-The-Base-Hooks) — kill-switch, steer, commit-on-stop. Operator-precision control for long-running Claude Code sessions.
+- [Use the design skill](Use-The-Design-Skill) — `/design author` walks the 10-section template, `/design translate` splits into parts, `/design sequence` generates a PLAN.md per part. Hand-off to harness `/work` + `/review` for execution.
 
 ## 📖 Looking up a detail?
 
@@ -33,6 +34,7 @@ Dogfood documentation for `agent-toolkit` — a personal collection of agent cus
 - [ADR 0001 — agent-toolkit purpose, scope, public-with-PII-guardrails](0001-agent-toolkit-purpose)
 - [ADR 0002 — evaluator sub-agent design](0002-evaluator-design)
 - [ADR 0003 — base operator-control hooks](0003-base-operator-hooks)
+- [ADR 0004 — design skill: human-facing design pipeline → agent execution handoff](0004-design-skill)
 
 ## Conventions
 
