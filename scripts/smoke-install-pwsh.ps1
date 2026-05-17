@@ -138,6 +138,67 @@ try {
         Remove-Item -LiteralPath $nohook -Recurse -Force -ErrorAction SilentlyContinue
     }
 
+    # ── -NoLegacyCleanup: suppresses the v0.9.0 legacy-cleanup prompt ──────
+    Write-Host '==> -NoLegacyCleanup (v0.9.0)'
+    $legacy = Join-Path ([System.IO.Path]::GetTempPath()) ("toolkit-legacy-" + [System.Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $legacy -Force | Out-Null
+    try {
+        git -C $legacy init -q -b main | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $legacy '.agents/skills/design') -Force | Out-Null
+        'fake legacy skill' | Out-File -FilePath (Join-Path $legacy '.agents/skills/design/SKILL.md')
+        pwsh -NoProfile -File (Join-Path $ToolkitRoot 'install.ps1') -NoLegacyCleanup $legacy | Out-File (Join-Path $legacy '.install.log')
+        $log = Get-Content (Join-Path $legacy '.install.log') -Raw
+        if ($log -match 'legacy gemini-cli cleanup') {
+            throw '-NoLegacyCleanup did not suppress the cleanup prompt'
+        }
+        if (-not (Test-Path -LiteralPath (Join-Path $legacy '.agents/skills/design/SKILL.md'))) {
+            throw '-NoLegacyCleanup deleted/moved legacy .agents/skills/design/ (should leave untouched)'
+        }
+    } finally {
+        Remove-Item -LiteralPath $legacy -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    # ── validate-manifests negative test: gemini-cli rejected with v0.9.0 msg ─
+    Write-Host '==> validate-manifests negative test (gemini-cli rejected)'
+    $vneg = Join-Path ([System.IO.Path]::GetTempPath()) ("toolkit-vneg-" + [System.Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path (Join-Path $vneg 'skills/test-gemini-cli-rejected') -Force | Out-Null
+    $vnegManifest = @"
+---
+name: test-gemini-cli-rejected
+description: Negative-test fixture - validate-manifests must reject this manifest because gemini-cli was removed in v0.9.0.
+kind: skill
+supported_hosts: [claude-code, antigravity, gemini-cli]
+version: 0.1.0
+install_scope: project
+---
+"@
+    $vnegManifest | Out-File -FilePath (Join-Path $vneg 'skills/test-gemini-cli-rejected/SKILL.md') -Encoding utf8
+    try {
+        $vnegDriver = @"
+import importlib.util
+spec = importlib.util.spec_from_file_location('vm', r'$($ToolkitRoot -replace '\\', '/')/scripts/validate-manifests.py')
+vm = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(vm)
+from pathlib import Path
+vm.ROOT = Path(r'$($vneg -replace '\\', '/')')
+p = Path(r'$($vneg -replace '\\', '/')/skills/test-gemini-cli-rejected/SKILL.md')
+fm = vm.parse_frontmatter(p)
+vm.require_supported_hosts(p, fm)
+print('ERRORS:', len(vm.errors))
+for issue in vm.errors:
+    print('MSG:', issue)
+"@
+        $vnegOut = python3 -c $vnegDriver 2>&1 | Out-String
+        if ($vnegOut -notmatch "removed host 'gemini-cli'") {
+            throw "validator did not emit 'removed host gemini-cli' message. Output:`n$vnegOut"
+        }
+        if ($vnegOut -notmatch 'v0\.9\.0') {
+            throw "validator's error message does not mention v0.9.0 (no actionable next-step). Output:`n$vnegOut"
+        }
+    } finally {
+        Remove-Item -LiteralPath $vneg -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
     # ── post-install integrity ─────────────────────────────────────────────
     Write-Host '==> post-install integrity'
     pwsh -NoProfile -File (Join-Path $ToolkitRoot 'scripts/check-integrity-pwsh.ps1') $scratch

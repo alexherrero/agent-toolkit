@@ -9,7 +9,8 @@ Required fields (all customizations):
   - name (string; matches dirname or 'bundle' for bundle.md)
   - description (non-empty string)
   - kind (enum membership)
-  - supported_hosts (non-empty list, subset of {claude-code, antigravity, gemini-cli})
+  - supported_hosts (non-empty list, subset of {claude-code, antigravity};
+    gemini-cli removed in v0.9.0 per ROADMAP item #15)
   - version (semver-shape: MAJOR.MINOR.PATCH with optional -prerelease)
 
 Required for bundles only:
@@ -47,7 +48,16 @@ KIND_ENUM = {
     "status-line", "output-style", "workflow", "rule", "snippet",
     "settings-fragment",
 }
-HOST_ENUM = {"claude-code", "antigravity", "gemini-cli"}
+HOST_ENUM = {"claude-code", "antigravity"}
+# Hosts deprecated and removed in this version. Surfaced separately from
+# unknown-host errors so the operator gets actionable next-step text
+# (point at the CHANGELOG entry that removed the host).
+REMOVED_HOSTS = {
+    "gemini-cli": "v0.9.0 removed standalone Gemini CLI host support per ROADMAP item #15. "
+                  "Drop 'gemini-cli' from supported_hosts. See "
+                  "https://github.com/alexherrero/agent-toolkit/blob/main/CHANGELOG.md "
+                  "for the v0.9.0 entry. Antigravity (Gemini-in-IDE) stays as a supported host.",
+}
 SCOPE_ENUM = {"user", "project", "either"}
 
 # Kind → expected manifest filename inside the customization's dir.
@@ -129,7 +139,12 @@ def require_supported_hosts(path: Path, fm: dict) -> None:
     if not isinstance(v, list) or not v:
         err(path, f"field 'supported_hosts' must be a non-empty list (got: {v!r})")
         return
-    unknown = [h for h in v if h not in HOST_ENUM]
+    # Surface removed hosts before unknown hosts — gives operator actionable
+    # next-step text (CHANGELOG pointer) rather than a generic "unknown host".
+    removed = [h for h in v if h in REMOVED_HOSTS]
+    for h in removed:
+        err(path, f"removed host '{h}' in 'supported_hosts': {REMOVED_HOSTS[h]}")
+    unknown = [h for h in v if h not in HOST_ENUM and h not in REMOVED_HOSTS]
     if unknown:
         err(path, f"unknown hosts in 'supported_hosts': {unknown} (allowed: {sorted(HOST_ENUM)})")
 

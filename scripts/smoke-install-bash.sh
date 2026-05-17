@@ -187,6 +187,81 @@ if ! grep -qF "skipping pre-push hook (--no-pre-push-hook)" "$NOHOOK/.install.lo
 fi
 rm -rf "$NOHOOK"
 
+# ── --no-legacy-cleanup: suppresses the v0.9.0 legacy-cleanup prompt ────────
+# v0.9.0 removed gemini-cli host; the installer detects pre-existing
+# .agents/skills/<name>/ from a prior install and offers backup+remove with
+# operator confirmation. The --no-legacy-cleanup flag suppresses the prompt
+# entirely for CI / scripted installs. Test: seed .agents/skills/<known>/,
+# run installer with --no-legacy-cleanup, confirm prompt suppressed +
+# legacy dir left as-is.
+echo "==> --no-legacy-cleanup (v0.9.0)"
+LEGACY="$(mktemp -d)"
+git -C "$LEGACY" init -q -b main
+mkdir -p "$LEGACY/.agents/skills/design"
+echo "fake legacy skill" > "$LEGACY/.agents/skills/design/SKILL.md"
+bash "$TOOLKIT_ROOT/install.sh" --no-legacy-cleanup "$LEGACY" > "$LEGACY/.install.log"
+if grep -qF "legacy gemini-cli cleanup" "$LEGACY/.install.log"; then
+  echo "FAIL: --no-legacy-cleanup did not suppress the cleanup prompt" >&2
+  rm -rf "$LEGACY"
+  exit 1
+fi
+if [[ ! -e "$LEGACY/.agents/skills/design/SKILL.md" ]]; then
+  echo "FAIL: --no-legacy-cleanup deleted/moved legacy .agents/skills/design/ (should leave untouched)" >&2
+  rm -rf "$LEGACY"
+  exit 1
+fi
+rm -rf "$LEGACY"
+
+# ── validate-manifests negative test: gemini-cli should error with v0.9.0 msg ─
+# Manifest containing 'gemini-cli' in supported_hosts must error with a clear
+# message pointing at the v0.9.0 CHANGELOG. Catches regressions if HOST_ENUM
+# ever re-admits gemini-cli or if REMOVED_HOSTS messaging breaks.
+echo "==> validate-manifests negative test (gemini-cli rejected)"
+VNEG="$(mktemp -d)"
+mkdir -p "$VNEG/skills/test-gemini-cli-rejected"
+cat > "$VNEG/skills/test-gemini-cli-rejected/SKILL.md" << 'NEG_EOF'
+---
+name: test-gemini-cli-rejected
+description: Negative-test fixture — validate-manifests must reject this manifest because gemini-cli was removed in v0.9.0.
+kind: skill
+supported_hosts: [claude-code, antigravity, gemini-cli]
+version: 0.1.0
+install_scope: project
+---
+NEG_EOF
+# Inline-invoke the validator's check function via a small driver script so
+# we test in isolation (don't pollute the real validator's exit code).
+VNEG_OUTPUT="$(python3 -c "
+import importlib.util, sys
+spec = importlib.util.spec_from_file_location('vm', '$TOOLKIT_ROOT/scripts/validate-manifests.py')
+vm = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(vm)
+from pathlib import Path
+# Override ROOT so err() can compute relative paths against the fixture dir
+vm.ROOT = Path('$VNEG')
+p = Path('$VNEG/skills/test-gemini-cli-rejected/SKILL.md')
+fm = vm.parse_frontmatter(p)
+vm.require_supported_hosts(p, fm)
+print('ERRORS:', len(vm.errors))
+for issue in vm.errors:
+    print('MSG:', issue)
+" 2>&1)"
+if ! echo "$VNEG_OUTPUT" | grep -qE "removed host 'gemini-cli'"; then
+  echo "FAIL: validator did not emit 'removed host gemini-cli' message for fixture with gemini-cli in supported_hosts" >&2
+  echo "Output was:" >&2
+  echo "$VNEG_OUTPUT" >&2
+  rm -rf "$VNEG"
+  exit 1
+fi
+if ! echo "$VNEG_OUTPUT" | grep -qE "v0.9.0"; then
+  echo "FAIL: validator's error message does not mention v0.9.0 (no actionable next-step text)" >&2
+  echo "Output was:" >&2
+  echo "$VNEG_OUTPUT" >&2
+  rm -rf "$VNEG"
+  exit 1
+fi
+rm -rf "$VNEG"
+
 # ── post-install integrity ──────────────────────────────────────────────────
 echo "==> post-install integrity"
 bash "$TOOLKIT_ROOT/scripts/check-integrity-bash.sh" "$SCRATCH"
