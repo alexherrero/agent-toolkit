@@ -2,8 +2,8 @@
 #
 # Installs personal agent customizations (skills, sub-agents, hooks, MCP
 # servers, slash commands, etc.) into a target project under host-specific
-# paths (.claude/, .agent/, .gemini/). Also installs a pre-push git hook
-# that runs check-no-pii.sh against every push.
+# paths (.claude/, .agent/). Also installs a pre-push git hook that runs
+# check-no-pii.sh against every push.
 #
 # Usage:
 #   pwsh -NoProfile -File install.ps1 [OPTIONS] <target-project-path>
@@ -16,6 +16,13 @@
 #   -All                     install everything (default)
 #   -Update                  true-sync; wipe and recreate managed dirs
 #   -NoPrePushHook           skip pre-push hook installation
+#   -NoLegacyCleanup         suppress the legacy .agents/skills/ + .gemini/agents/
+#                            cleanup prompt (v0.9.0+ removed gemini-cli host;
+#                            the installer detects pre-existing legacy
+#                            destinations from a prior install and offers
+#                            backup+remove with operator confirmation. This
+#                            switch skips the prompt entirely — useful for CI
+#                            / scripted installs.)
 #   -Help                    print this help and exit
 
 [CmdletBinding()]
@@ -27,6 +34,7 @@ param(
     [switch]$All,
     [switch]$Update,
     [switch]$NoPrePushHook,
+    [switch]$NoLegacyCleanup,
     [switch]$Help,
     [Parameter(Position=0)]
     [string]$Target
@@ -92,12 +100,118 @@ Write-Host "==> agent-toolkit install: $Target"
 $ManagedParents = @(
     '.claude/skills',
     '.agent/skills',
-    '.agents/skills',
     '.claude/agents',
-    '.gemini/agents',
     '.claude/hooks'
 )
-$EmptyParentCandidates = @('.agents')
+$EmptyParentCandidates = @()
+
+# ── legacy gemini-cli cleanup (v0.9.0+) ───────────────────────────────────
+# v0.9.0 removed standalone Gemini CLI host support. Prior installs may have
+# populated either:
+#   - .agents/skills/<name>/ (skills installed with gemini-cli host)
+#   - .gemini/agents/<name>.md (agents installed with gemini-cli host)
+# Detect pre-existing entries that match currently-managed customization
+# names; offer a backup-then-remove flow with operator confirmation. Defaults
+# to N (no-op unless operator opts in). -NoLegacyCleanup suppresses the
+# prompt entirely (useful for CI / scripted installs). Non-interactive
+# sessions also skip the prompt with a one-line notice. Never hard-deletes —
+# moves to timestamped backups at <path>.agent-toolkit-bak.<ts>/ per the
+# pre-push-hook backup convention. Only touches entries the installer
+# recognizes as toolkit-managed (matches manifest names); leaves any
+# unmanaged user files alone.
+function Invoke-LegacyCleanupGeminiCli {
+    if ($NoLegacyCleanup) { return }
+    $hasLegacySkills = Test-Path -LiteralPath '.agents/skills' -PathType Container
+    $hasLegacyAgents = Test-Path -LiteralPath '.gemini/agents' -PathType Container
+    if (-not $hasLegacySkills -and -not $hasLegacyAgents) { return }
+
+    # Enumerate toolkit-managed names from manifests.
+    $knownSkillNames = @()
+    $knownAgentNames = @()
+    Get-ChildItem -LiteralPath (Join-Path $ToolkitRoot 'skills') -Directory -ErrorAction SilentlyContinue |
+        Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'SKILL.md') } |
+        ForEach-Object { $knownSkillNames += $_.Name }
+    Get-ChildItem -LiteralPath (Join-Path $ToolkitRoot 'bundles') -Directory -ErrorAction SilentlyContinue |
+        ForEach-Object {
+            $bs = Join-Path $_.FullName 'skills'
+            if (Test-Path -LiteralPath $bs -PathType Container) {
+                Get-ChildItem -LiteralPath $bs -Directory | ForEach-Object { $knownSkillNames += $_.Name }
+            }
+            $ba = Join-Path $_.FullName 'agents'
+            if (Test-Path -LiteralPath $ba -PathType Container) {
+                Get-ChildItem -LiteralPath $ba -Filter '*.md' -File | ForEach-Object { $knownAgentNames += $_.BaseName }
+            }
+        }
+    $agentsRoot = Join-Path $ToolkitRoot 'agents'
+    if (Test-Path -LiteralPath $agentsRoot -PathType Container) {
+        Get-ChildItem -LiteralPath $agentsRoot -Filter '*.md' -File -ErrorAction SilentlyContinue |
+            ForEach-Object { $knownAgentNames += $_.BaseName }
+    }
+
+    # Match .agents/skills/ against known skill names.
+    $matchedSkills = @()
+    if ($hasLegacySkills) {
+        Get-ChildItem -LiteralPath '.agents/skills' -Directory -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                if ($knownSkillNames -contains $_.Name) { $matchedSkills += $_.FullName }
+            }
+    }
+    # Match .gemini/agents/*.md against known agent names.
+    $matchedAgents = @()
+    if ($hasLegacyAgents) {
+        Get-ChildItem -LiteralPath '.gemini/agents' -Filter '*.md' -File -ErrorAction SilentlyContinue |
+            ForEach-Object {
+                if ($knownAgentNames -contains $_.BaseName) { $matchedAgents += $_.FullName }
+            }
+    }
+    if ($matchedSkills.Count -eq 0 -and $matchedAgents.Count -eq 0) { return }
+
+    Write-Host ''
+    Write-Host '==> legacy gemini-cli cleanup'
+    Write-Host 'agent-toolkit v0.9.0+ removed standalone Gemini CLI host support.'
+    Write-Host 'Found legacy toolkit-managed entries from a prior install:'
+    foreach ($m in $matchedSkills) { Write-Host "  - $m/  (legacy skill destination)" }
+    foreach ($m in $matchedAgents) { Write-Host "  - $m  (legacy agent destination)" }
+    Write-Host ''
+
+    $response = ''
+    if ([Environment]::UserInteractive -and -not [Console]::IsInputRedirected) {
+        $response = Read-Host 'Move to timestamped backup(s) and remove from active install paths? [y/N]'
+    } else {
+        Write-Host 'Move to timestamped backup(s) and remove from active install paths? [y/N]: '
+        Write-Host '    (non-interactive session — defaulting to N; pass -NoLegacyCleanup to suppress this notice)'
+    }
+
+    if ($response -match '^[Yy]$') {
+        $ts = Get-Date -Format 'yyyyMMddHHmmss'
+        if ($matchedSkills.Count -gt 0) {
+            $bak = ".agents/skills.agent-toolkit-bak.$ts"
+            Move-Item -LiteralPath '.agents/skills' -Destination $bak
+            Write-Host "    moved .agents/skills/ -> $bak/"
+            if ((Test-Path -LiteralPath '.agents') -and -not (Get-ChildItem -LiteralPath '.agents' -Force -ErrorAction SilentlyContinue)) {
+                Remove-Item -LiteralPath '.agents' -Force
+                Write-Host '    removed empty .agents/ directory'
+            }
+        }
+        if ($matchedAgents.Count -gt 0) {
+            $bak = ".gemini/agents.agent-toolkit-bak.$ts"
+            Move-Item -LiteralPath '.gemini/agents' -Destination $bak
+            Write-Host "    moved .gemini/agents/ -> $bak/"
+            if ((Test-Path -LiteralPath '.gemini') -and -not (Get-ChildItem -LiteralPath '.gemini' -Force -ErrorAction SilentlyContinue)) {
+                Remove-Item -LiteralPath '.gemini' -Force
+                Write-Host '    removed empty .gemini/ directory'
+            }
+        }
+    } else {
+        Write-Host '    cleanup skipped — to remove manually later:'
+        if ($hasLegacySkills) { Write-Host '        Remove-Item -Recurse .agents/skills/' }
+        if ($hasLegacyAgents) { Write-Host '        Remove-Item -Recurse .gemini/agents/' }
+        Write-Host '    (or re-run with -NoLegacyCleanup to suppress this prompt)'
+    }
+    Write-Host ''
+}
+
+Invoke-LegacyCleanupGeminiCli
 
 if ($Update) {
     Write-Host '==> sync mode: wiping toolkit-managed dirs before recreate from source'
@@ -125,10 +239,6 @@ function Install-Skill([string]$srcDir, [string]$name, [string]$hosts) {
                 New-Item -ItemType Directory -Path '.agent/skills' -Force | Out-Null
                 Copy-ManagedDir $srcDir (Join-Path '.agent/skills' $name)
             }
-            'gemini-cli' {
-                New-Item -ItemType Directory -Path '.agents/skills' -Force | Out-Null
-                Copy-ManagedDir $srcDir (Join-Path '.agents/skills' $name)
-            }
             default {
                 Write-Warning "unknown host '$hostName' for skill '$name' - skipped"
             }
@@ -137,7 +247,7 @@ function Install-Skill([string]$srcDir, [string]$name, [string]$hosts) {
 }
 
 function Install-Hook([string]$hookDir, [string]$name, [string]$hosts) {
-    # v0.7.0: claude-code only. Other hosts have no first-class hook surface.
+    # v0.7.0: claude-code only. Antigravity has no first-class hook surface.
     foreach ($hostName in ($hosts -split ',')) {
         $hostName = $hostName.Trim()
         if (-not $hostName) { continue }
@@ -159,8 +269,8 @@ function Install-Hook([string]$hookDir, [string]$name, [string]$hosts) {
                 python3 (Join-Path $ToolkitRoot 'scripts/merge-settings-fragment.py') `
                     '.claude/settings.json' $fragmentSrc
             }
-            { @('antigravity','gemini-cli') -contains $_ } {
-                Write-Warning "host '$hostName' has no first-class hook surface (v0.7.0); skipped for hook '$name'"
+            'antigravity' {
+                Write-Warning "host 'antigravity' has no first-class hook surface (v0.7.0); skipped for hook '$name'"
             }
             default {
                 Write-Warning "unknown host '$hostName' for hook '$name' - skipped"
@@ -170,8 +280,9 @@ function Install-Hook([string]$hookDir, [string]$name, [string]$hosts) {
 }
 
 function Install-Agent([string]$srcFile, [string]$name, [string]$hosts) {
-    # Agents are file-level for claude-code + gemini-cli; antigravity wraps
-    # them as skills (no first-class sub-agent surface in Antigravity).
+    # Agents are file-level for claude-code (.claude/agents/<name>.md).
+    # Antigravity has no first-class sub-agent surface — agents get wrapped
+    # as skills at .agent/skills/<name>/SKILL.md per the locked per-host paths.
     # $hostName not $host — see note above.
     foreach ($hostName in ($hosts -split ',')) {
         $hostName = $hostName.Trim()
@@ -185,10 +296,6 @@ function Install-Agent([string]$srcFile, [string]$name, [string]$hosts) {
                 $wrap = Join-Path '.agent/skills' $name
                 New-Item -ItemType Directory -Path $wrap -Force | Out-Null
                 Copy-ManagedFile $srcFile (Join-Path $wrap 'SKILL.md')
-            }
-            'gemini-cli' {
-                New-Item -ItemType Directory -Path '.gemini/agents' -Force | Out-Null
-                Copy-ManagedFile $srcFile (Join-Path '.gemini/agents' "$name.md")
             }
             default {
                 Write-Warning "unknown host '$hostName' for agent '$name' - skipped"

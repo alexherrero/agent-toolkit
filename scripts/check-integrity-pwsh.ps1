@@ -36,7 +36,7 @@ Get-ChildItem -LiteralPath $Scratch -Recurse -File -Filter SKILL.md -ErrorAction
 
 # ── 1b. Every installed agent .md file non-empty + has frontmatter ─────────
 Write-Host '  [integrity] installed agent .md files have valid frontmatter'
-foreach ($parent in '.claude/agents', '.gemini/agents') {
+foreach ($parent in @('.claude/agents')) {
     $full = Join-Path $Scratch $parent
     if (-not (Test-Path -LiteralPath $full -PathType Container)) { continue }
     Get-ChildItem -LiteralPath $full -File -Filter '*.md' -ErrorAction SilentlyContinue | ForEach-Object {
@@ -75,7 +75,7 @@ if (Test-Path -LiteralPath $hook) {
 
 # ── 3. No stray files under skill managed parents ──────────────────────────
 Write-Host '  [integrity] no stray files under skill managed parents'
-foreach ($parent in '.claude/skills', '.agent/skills', '.agents/skills') {
+foreach ($parent in '.claude/skills', '.agent/skills') {
     $full = Join-Path $Scratch $parent
     if (-not (Test-Path -LiteralPath $full -PathType Container)) { continue }
     Get-ChildItem -LiteralPath $full -Force | ForEach-Object {
@@ -94,7 +94,7 @@ foreach ($parent in '.claude/skills', '.agent/skills', '.agents/skills') {
 
 # ── 4. No stray entries under agent managed parents ────────────────────────
 Write-Host '  [integrity] no stray entries under agent managed parents'
-foreach ($parent in '.claude/agents', '.gemini/agents') {
+foreach ($parent in @('.claude/agents')) {
     $full = Join-Path $Scratch $parent
     if (-not (Test-Path -LiteralPath $full -PathType Container)) { continue }
     Get-ChildItem -LiteralPath $full -Force | ForEach-Object {

@@ -3,8 +3,8 @@
 #
 # Installs personal agent customizations (skills, sub-agents, hooks, MCP
 # servers, slash commands, etc.) into a target project under host-specific
-# paths (.claude/, .agent/, .gemini/). Also installs a pre-push git hook
-# that runs check-no-pii.sh against every push.
+# paths (.claude/, .agent/). Also installs a pre-push git hook that runs
+# check-no-pii.sh against every push.
 #
 # Usage:
 #   install.sh [OPTIONS] <target-project-path>
@@ -17,6 +17,12 @@
 #   --all                    install everything (default)
 #   --update                 true-sync; wipe and recreate managed dirs
 #   --no-pre-push-hook       skip pre-push hook installation
+#   --no-legacy-cleanup      suppress the legacy .agents/skills/ cleanup prompt
+#                            (v0.9.0+ removed gemini-cli host; the installer
+#                             detects pre-existing .agents/skills/ from a prior
+#                             install and offers backup+remove with operator
+#                             confirmation. This flag skips the prompt entirely
+#                             — useful for CI / scripted installs.)
 #   --help, -h               print this help and exit
 
 set -euo pipefail
@@ -30,6 +36,7 @@ SELECT_AGENT=""
 SELECT_HOOK=""
 UPDATE_MODE=0
 NO_PRE_PUSH_HOOK=0
+NO_LEGACY_CLEANUP=0
 
 print_help() {
     sed -n '/^# install.sh/,/^[^#]/p' "$0" | sed 's|^# \?||' | head -n -1
@@ -60,6 +67,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --update) UPDATE_MODE=1; shift ;;
         --no-pre-push-hook) NO_PRE_PUSH_HOOK=1; shift ;;
+        --no-legacy-cleanup) NO_LEGACY_CLEANUP=1; shift ;;
         --help|-h) print_help; exit 0 ;;
         --*) echo "Unknown option: $1" >&2; echo "" >&2; print_help >&2; exit 2 ;;
         *)
@@ -137,21 +145,154 @@ echo "==> agent-toolkit install: $TARGET"
 MANAGED_PARENTS=(
     .claude/skills
     .agent/skills
-    .agents/skills
     .claude/agents
-    .gemini/agents
     .claude/hooks
 )
-EMPTY_PARENT_CANDIDATES=(
-    .agents
-)
+EMPTY_PARENT_CANDIDATES=()
+
+# ── legacy gemini-cli cleanup (v0.9.0+) ───────────────────────────────────
+# v0.9.0 removed standalone Gemini CLI host support. Prior installs may have
+# populated either:
+#   - .agents/skills/<name>/ (skills installed with gemini-cli host)
+#   - .gemini/agents/<name>.md (agents installed with gemini-cli host)
+# Detect pre-existing entries that match currently-managed customization
+# names; offer a backup-then-remove flow with operator confirmation. Defaults
+# to N (no-op unless operator opts in). --no-legacy-cleanup suppresses the
+# prompt entirely (useful for CI / scripted installs). Non-interactive stdin
+# also skips the prompt with a one-line notice. Never hard-deletes — moves
+# to timestamped backups at <path>.agent-toolkit-bak.<ts>/ per the
+# pre-push-hook backup convention. Only touches entries the installer
+# recognizes as toolkit-managed (matches manifest names); leaves any
+# unmanaged user files alone.
+legacy_cleanup_gemini_cli() {
+    if [[ $NO_LEGACY_CLEANUP -eq 1 ]]; then
+        return 0
+    fi
+    local has_legacy_skills=0 has_legacy_agents=0
+    [[ -d .agents/skills ]] && has_legacy_skills=1
+    [[ -d .gemini/agents ]] && has_legacy_agents=1
+    if [[ $has_legacy_skills -eq 0 && $has_legacy_agents -eq 0 ]]; then
+        return 0
+    fi
+    # Enumerate toolkit-managed names from manifests.
+    local known_skill_names=() known_agent_names=() md
+    for md in "$TOOLKIT_ROOT"/skills/*/SKILL.md; do
+        [[ -f "$md" ]] || continue
+        known_skill_names+=("$(basename "$(dirname "$md")")")
+    done
+    for md in "$TOOLKIT_ROOT"/bundles/*/skills/*/SKILL.md; do
+        [[ -f "$md" ]] || continue
+        known_skill_names+=("$(basename "$(dirname "$md")")")
+    done
+    for md in "$TOOLKIT_ROOT"/agents/*.md; do
+        [[ -f "$md" ]] || continue
+        known_agent_names+=("$(basename "$md" .md)")
+    done
+    for md in "$TOOLKIT_ROOT"/bundles/*/agents/*.md; do
+        [[ -f "$md" ]] || continue
+        known_agent_names+=("$(basename "$md" .md)")
+    done
+    # Match .agents/skills/ entries against known SKILL names.
+    local matched_skills=() entry name known
+    if [[ $has_legacy_skills -eq 1 ]]; then
+        for entry in .agents/skills/*; do
+            [[ -d "$entry" ]] || continue
+            name="$(basename "$entry")"
+            for known in "${known_skill_names[@]}"; do
+                if [[ "$name" == "$known" ]]; then
+                    matched_skills+=("$entry")
+                    break
+                fi
+            done
+        done
+    fi
+    # Match .gemini/agents/ entries against known AGENT names.
+    local matched_agents=()
+    if [[ $has_legacy_agents -eq 1 ]]; then
+        for entry in .gemini/agents/*.md; do
+            [[ -f "$entry" ]] || continue
+            name="$(basename "$entry" .md)"
+            for known in "${known_agent_names[@]}"; do
+                if [[ "$name" == "$known" ]]; then
+                    matched_agents+=("$entry")
+                    break
+                fi
+            done
+        done
+    fi
+    if [[ ${#matched_skills[@]} -eq 0 && ${#matched_agents[@]} -eq 0 ]]; then
+        return 0
+    fi
+    echo ""
+    echo "==> legacy gemini-cli cleanup"
+    echo "agent-toolkit v0.9.0+ removed standalone Gemini CLI host support."
+    echo "Found legacy toolkit-managed entries from a prior install:"
+    local m
+    if [[ ${#matched_skills[@]} -gt 0 ]]; then
+        for m in "${matched_skills[@]}"; do
+            echo "  - $m/  (legacy skill destination)"
+        done
+    fi
+    if [[ ${#matched_agents[@]} -gt 0 ]]; then
+        for m in "${matched_agents[@]}"; do
+            echo "  - $m  (legacy agent destination)"
+        done
+    fi
+    echo ""
+    echo -n "Move to timestamped backup(s) and remove from active install paths? [y/N]: "
+    local response=""
+    if [[ -t 0 ]]; then
+        if ! read -r response; then
+            response=""
+        fi
+    else
+        echo ""
+        echo "    (non-interactive stdin — defaulting to N; pass --no-legacy-cleanup to suppress this notice)"
+    fi
+    if [[ "$response" =~ ^[Yy]$ ]]; then
+        local ts
+        ts="$(date +%Y%m%d%H%M%S)"
+        if [[ ${#matched_skills[@]} -gt 0 ]]; then
+            local bak=".agents/skills.agent-toolkit-bak.$ts"
+            mv .agents/skills "$bak"
+            echo "    moved .agents/skills/ → $bak/"
+            if [[ -d .agents ]] && [[ -z "$(ls -A .agents 2>/dev/null)" ]]; then
+                rmdir .agents
+                echo "    removed empty .agents/ directory"
+            fi
+        fi
+        if [[ ${#matched_agents[@]} -gt 0 ]]; then
+            local bak=".gemini/agents.agent-toolkit-bak.$ts"
+            mv .gemini/agents "$bak"
+            echo "    moved .gemini/agents/ → $bak/"
+            if [[ -d .gemini ]] && [[ -z "$(ls -A .gemini 2>/dev/null)" ]]; then
+                rmdir .gemini
+                echo "    removed empty .gemini/ directory"
+            fi
+        fi
+    else
+        echo "    cleanup skipped — to remove manually later:"
+        [[ $has_legacy_skills -eq 1 ]] && echo "        rm -rf .agents/skills/"
+        [[ $has_legacy_agents -eq 1 ]] && echo "        rm -rf .gemini/agents/"
+        echo "    (or re-run with --no-legacy-cleanup to suppress this prompt)"
+    fi
+    echo ""
+}
+
+legacy_cleanup_gemini_cli
 
 if [[ $UPDATE_MODE -eq 1 ]]; then
     echo "==> sync mode: wiping toolkit-managed dirs before recreate from source"
-    sync_managed_parents \
-        "${MANAGED_PARENTS[@]}" \
-        -- \
-        "${EMPTY_PARENT_CANDIDATES[@]}"
+    if [[ ${#EMPTY_PARENT_CANDIDATES[@]} -gt 0 ]]; then
+        sync_managed_parents \
+            "${MANAGED_PARENTS[@]}" \
+            -- \
+            "${EMPTY_PARENT_CANDIDATES[@]}"
+    else
+        sync_managed_parents \
+            "${MANAGED_PARENTS[@]}" \
+            --
+    fi
 fi
 
 # ── helpers ───────────────────────────────────────────────────────────────
@@ -182,10 +323,6 @@ install_skill() {
                 mkdir -p .agent/skills
                 cp_managed_dir "$src_dir" ".agent/skills/$name"
                 ;;
-            gemini-cli)
-                mkdir -p .agents/skills
-                cp_managed_dir "$src_dir" ".agents/skills/$name"
-                ;;
             *)
                 echo "    warning: unknown host '$host' for skill '$name' — skipped" >&2
                 ;;
@@ -195,7 +332,7 @@ install_skill() {
 
 # install_hook <hook-dir> <hook-name> <comma-separated-hosts>
 # Dispatches a hook to per-host destinations. v0.7.0: claude-code only —
-# other hosts (antigravity, gemini-cli) have no first-class hook surface.
+# antigravity has no first-class hook surface.
 # For claude-code: copy the .sh script to .claude/hooks/<name>.sh (chmod +x)
 # AND merge settings-fragment-bash.json into .claude/settings.json via the
 # Python helper scripts/merge-settings-fragment.py.
@@ -225,8 +362,8 @@ install_hook() {
                 python3 "$TOOLKIT_ROOT/scripts/merge-settings-fragment.py" \
                     .claude/settings.json "$fragment_src"
                 ;;
-            antigravity|gemini-cli)
-                echo "    warning: host '$host' has no first-class hook surface (v0.7.0); skipped for hook '$name'" >&2
+            antigravity)
+                echo "    warning: host 'antigravity' has no first-class hook surface (v0.7.0); skipped for hook '$name'" >&2
                 ;;
             *)
                 echo "    warning: unknown host '$host' for hook '$name' — skipped" >&2
@@ -236,10 +373,10 @@ install_hook() {
 }
 
 # install_agent <source-file> <agent-name> <comma-separated-hosts>
-# Dispatches an agent to per-host destinations. Source is a single .md file
-# (agents are file-level, not dir-level — except for antigravity which has
-# no first-class sub-agent surface and gets the agent wrapped as a skill
-# at .agent/skills/<name>/SKILL.md per the locked per-host paths table).
+# Dispatches an agent to per-host destinations. Source is a single .md file.
+# Claude Code: file-level at .claude/agents/<name>.md.
+# Antigravity: no first-class sub-agent surface — agent gets wrapped as a
+# skill at .agent/skills/<name>/SKILL.md per the locked per-host paths table.
 install_agent() {
     local src_file="$1" name="$2" hosts="$3"
     IFS=',' read -ra host_array <<< "$hosts"
@@ -255,10 +392,6 @@ install_agent() {
             antigravity)
                 mkdir -p ".agent/skills/$name"
                 cp_managed "$src_file" ".agent/skills/$name/SKILL.md"
-                ;;
-            gemini-cli)
-                mkdir -p .gemini/agents
-                cp_managed "$src_file" ".gemini/agents/$name.md"
                 ;;
             *)
                 echo "    warning: unknown host '$host' for agent '$name' — skipped" >&2

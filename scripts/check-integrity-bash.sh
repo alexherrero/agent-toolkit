@@ -50,7 +50,7 @@ while IFS= read -r f; do
     echo "FAIL: $f has no opening --- frontmatter delimiter" >&2
     fail=1
   fi
-done < <(find "$SCRATCH/.claude/agents" "$SCRATCH/.gemini/agents" -maxdepth 1 -name '*.md' -type f 2>/dev/null)
+done < <(find "$SCRATCH/.claude/agents" -maxdepth 1 -name '*.md' -type f 2>/dev/null)
 
 # ── 2. Pre-push hook integrity (if present) ────────────────────────────────
 if [[ -e "$SCRATCH/.git/hooks/pre-push" ]]; then
@@ -73,7 +73,7 @@ fi
 # Each skill managed parent should contain only <skill-name>/SKILL.md children.
 # Anything else is an installer regression.
 echo "  [integrity] no stray files under skill managed parents"
-for parent in .claude/skills .agent/skills .agents/skills; do
+for parent in .claude/skills .agent/skills; do
   full="$SCRATCH/$parent"
   [[ -d "$full" ]] || continue
   while IFS= read -r entry; do
@@ -93,10 +93,11 @@ for parent in .claude/skills .agent/skills .agents/skills; do
 done
 
 # ── 4. No stray non-.md files under agent-managed-parent dirs ──────────────
-# Agent managed parents (.claude/agents, .gemini/agents) contain single-file
-# <name>.md entries directly. Anything else (subdirs, non-.md files) is a regression.
+# Agent managed parents (.claude/agents) contain single-file <name>.md entries
+# directly. Anything else (subdirs, non-.md files) is a regression.
+# Note: .gemini/agents was removed in v0.9.0 along with gemini-cli host support.
 echo "  [integrity] no stray entries under agent managed parents"
-for parent in .claude/agents .gemini/agents; do
+for parent in .claude/agents; do
   full="$SCRATCH/$parent"
   [[ -d "$full" ]] || continue
   while IFS= read -r entry; do

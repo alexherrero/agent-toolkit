@@ -21,24 +21,22 @@ try {
 
     # ── expected files ─────────────────────────────────────────────────────
     $expected = @(
+        # Bundle: example-bundle -> example-skill across 2 hosts (claude-code + antigravity).
+        # gemini-cli host removed in v0.9.0 (ROADMAP #15).
         '.claude/skills/example-skill/SKILL.md',
         '.agent/skills/example-skill/SKILL.md',
-        '.agents/skills/example-skill/SKILL.md',
         '.claude/skills/pii-scrubber/SKILL.md',
         '.agent/skills/pii-scrubber/SKILL.md',
-        '.agents/skills/pii-scrubber/SKILL.md',
         # Standalone skill: design (scaffold only in v0.7.0+; bodies in tasks 2-4 of plan #6).
         '.claude/skills/design/SKILL.md',
         '.claude/skills/design/templates/design-doc.md',
         '.agent/skills/design/SKILL.md',
         '.agent/skills/design/templates/design-doc.md',
-        '.agents/skills/design/SKILL.md',
-        '.agents/skills/design/templates/design-doc.md',
-        # Standalone agent: evaluator. claude-code + gemini-cli are
-        # single-file; antigravity wraps the agent as a skill.
+        # Standalone agent: evaluator. claude-code is single-file;
+        # antigravity wraps the agent as a skill. (gemini-cli destination
+        # .gemini/agents/evaluator.md removed in v0.9.0.)
         '.claude/agents/evaluator.md',
         '.agent/skills/evaluator/SKILL.md',
-        '.gemini/agents/evaluator.md',
         # Standalone hooks (claude-code only, v0.7.0).
         '.claude/hooks/kill-switch.ps1',
         '.claude/hooks/steer.ps1',
@@ -51,6 +49,18 @@ try {
         $full = Join-Path $scratch $p
         if (-not (Test-Path -LiteralPath $full)) {
             Write-Error "MISSING: $p"
+            $fail = $true
+        }
+    }
+
+    # ── negative-existence assertions (v0.9.0+ — gemini-cli removed) ───────────
+    # These paths MUST NOT exist after install. Catches regressions if the
+    # gemini-cli dispatch arms ever come back.
+    $notExpected = @('.agents', '.gemini')
+    foreach ($p in $notExpected) {
+        $full = Join-Path $scratch $p
+        if (Test-Path -LiteralPath $full) {
+            Write-Error "UNEXPECTED (v0.9.0+ removed gemini-cli): $p exists at $full"
             $fail = $true
         }
     }
