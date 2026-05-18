@@ -204,7 +204,7 @@ def session_start(
             break
         try:
             content = md_path.read_text(encoding="utf-8")
-        except OSError as e:
+        except (OSError, UnicodeDecodeError) as e:
             print(
                 f"[memory-recall-session-start] warning: unreadable entry {md_path.name}: {e}",
                 file=stderr,
@@ -375,9 +375,13 @@ def _grep_search(
     for md_path in _iter_entry_paths(vault, include_inbox=include_inbox):
         if deadline is not None and time.monotonic() > deadline:
             break
+        # Broad catch on file read: OSError for IO problems, UnicodeDecodeError
+        # for invalid UTF-8 (rare but possible if an entry was hand-edited in
+        # a non-UTF-8 editor or a cross-platform sync corrupted the encoding).
+        # Skip the entry rather than crash the whole walk.
         try:
             content = md_path.read_text(encoding="utf-8")
-        except OSError:
+        except (OSError, UnicodeDecodeError):
             continue
         fm, body = _parse_frontmatter(content)
         if fm.get("status") == "superseded":
@@ -664,7 +668,7 @@ def prompt_submit(
             md_path = vault / result["path"]
             try:
                 content = md_path.read_text(encoding="utf-8")
-            except OSError:
+            except (OSError, UnicodeDecodeError):
                 continue
             fm, body = _parse_frontmatter(content)
             if i > 0:
