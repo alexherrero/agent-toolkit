@@ -32,6 +32,7 @@ import os
 import sys
 import urllib.error
 import urllib.request
+from pathlib import Path
 
 # Anthropic embeddings endpoint (Claude embeddings API).
 # Voyage AI provides the actual embedding service; Anthropic's docs point
@@ -43,6 +44,26 @@ _VOYAGE_MODEL = "voyage-2"  # Default model; balances quality + cost.
 
 # Local sentence-transformers model (Tech Debt #1 — small + offline-capable).
 _LOCAL_MODEL = "all-MiniLM-L6-v2"  # 384-d, ~80MB
+
+# Local model cache directory (plan #7a part 2 task 4). sentence-transformers
+# respects the SENTENCE_TRANSFORMERS_HOME env var for its model cache location.
+# We pin it to ~/.cache/agent-toolkit/sentence-transformers/ so:
+#   1. The download stays under a single toolkit-owned directory (operators
+#      can rm -rf the cache cleanly to free disk space).
+#   2. It doesn't conflict with other tools that use sentence-transformers
+#      via the package's default cache location (~/.cache/huggingface/ or
+#      ~/.cache/torch/sentence_transformers/).
+#   3. The cache is durable across MemoryVault sessions + survives toolkit
+#      reinstalls (the toolkit's installer never touches user home dirs
+#      outside .claude/ and .agent/).
+# Set lazily inside _embed_local() so importing this module doesn't touch
+# os.environ for callers that only use api or stub mode.
+_LOCAL_CACHE_DIR = Path(
+    os.environ.get(
+        "AGENT_TOOLKIT_SENTENCE_TRANSFORMERS_CACHE",
+        str(Path.home() / ".cache" / "agent-toolkit" / "sentence-transformers"),
+    )
+).expanduser()
 
 # Embedding dimensions — must match across modes for vec-index consistency.
 # Voyage voyage-2 produces 1024-d; sentence-transformers all-MiniLM-L6-v2
@@ -123,7 +144,18 @@ def _embed_local(text: str) -> list[float]:
 
     Lazy-imports sentence-transformers — the package isn't a hard toolkit
     dep, so callers that only ever use api or stub mode don't need it.
+
+    Sets SENTENCE_TRANSFORMERS_HOME to _LOCAL_CACHE_DIR before importing so
+    the all-MiniLM-L6-v2 checkpoint lands under
+    ~/.cache/agent-toolkit/sentence-transformers/ (plan #7a part 2 task 4
+    locked path). The setenv happens here (not at module load) so callers
+    using only api/stub modes never touch the env var.
     """
+    # Pin the cache directory before sentence-transformers imports + reads
+    # SENTENCE_TRANSFORMERS_HOME at module-init time. Idempotent — re-running
+    # always points at the same location.
+    _LOCAL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME", str(_LOCAL_CACHE_DIR))
     try:
         from sentence_transformers import SentenceTransformer  # type: ignore
     except ImportError as e:

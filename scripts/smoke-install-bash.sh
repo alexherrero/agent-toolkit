@@ -895,6 +895,114 @@ if [[ -n "$Q9_OUT" ]]; then
 fi
 rm -rf "$MQUERY"
 
+# ── Embedding fallback path test (plan #7a part 2 task 4) ──────────────────
+# Verify the locked-design-call D3 fallback chain: API default → local
+# sentence-transformers when MEMORY_USE_API_EMBEDDINGS=false → grep-only
+# when neither available. The local mode is shipped in v1 (already
+# implemented in plan #7a part 1 task 4 via embed.py's "local" mode;
+# task 4 of part 2 added the explicit ~/.cache/agent-toolkit/
+# sentence-transformers/ cache path + verifies the end-to-end toggle).
+echo "==> Embedding fallback path test (plan #7a part 2 task 4)"
+EMBED_PY="$SCRATCH/.claude/skills/memory/scripts/embed.py"
+# Test A: env var resolution chain — unset → "api", "false" → "local"
+RESOLVE_DEFAULT="$(unset MEMORY_USE_API_EMBEDDINGS; python3 -c "
+import sys
+sys.path.insert(0, '$SCRATCH/.claude/skills/memory/scripts')
+from embed import _resolve_mode
+print(_resolve_mode(None))
+")"
+if [[ "$RESOLVE_DEFAULT" != "api" ]]; then
+  echo "FAIL: default mode resolution should be 'api', got '$RESOLVE_DEFAULT'" >&2
+  exit 1
+fi
+RESOLVE_LOCAL="$(MEMORY_USE_API_EMBEDDINGS=false python3 -c "
+import sys
+sys.path.insert(0, '$SCRATCH/.claude/skills/memory/scripts')
+from embed import _resolve_mode
+print(_resolve_mode(None))
+")"
+if [[ "$RESOLVE_LOCAL" != "local" ]]; then
+  echo "FAIL: MEMORY_USE_API_EMBEDDINGS=false should resolve to 'local', got '$RESOLVE_LOCAL'" >&2
+  exit 1
+fi
+# Test B: embed.py --mode local with no sentence-transformers → graceful
+# EmbeddingUnavailable (exit 2 — distinct from generic error exit 1) +
+# stderr message with install hint.
+# Note: capture exit code via `|| EMBED_LOCAL_EXIT=$?` form so `set -e`
+# doesn't kill the script on the expected non-zero.
+EMBED_LOCAL_EXIT=0
+EMBED_LOCAL_OUT="$(python3 "$EMBED_PY" "test text" --mode local 2>&1)" || EMBED_LOCAL_EXIT=$?
+if [[ $EMBED_LOCAL_EXIT -ne 2 ]]; then
+  echo "FAIL: embed.py --mode local exited $EMBED_LOCAL_EXIT (expected 2 for graceful EmbeddingUnavailable)" >&2
+  echo "    output: $EMBED_LOCAL_OUT" >&2
+  exit 1
+fi
+if ! echo "$EMBED_LOCAL_OUT" | grep -qE "sentence-transformers"; then
+  echo "FAIL: embed.py --mode local error missing sentence-transformers install hint" >&2
+  echo "    output: $EMBED_LOCAL_OUT" >&2
+  exit 1
+fi
+# Test C: cache dir constant points at ~/.cache/agent-toolkit/sentence-transformers/
+CACHE_DIR="$(python3 -c "
+import sys
+sys.path.insert(0, '$SCRATCH/.claude/skills/memory/scripts')
+from embed import _LOCAL_CACHE_DIR
+print(_LOCAL_CACHE_DIR)
+")"
+if [[ "$CACHE_DIR" != *"agent-toolkit/sentence-transformers"* ]]; then
+  echo "FAIL: _LOCAL_CACHE_DIR should contain 'agent-toolkit/sentence-transformers', got '$CACHE_DIR'" >&2
+  exit 1
+fi
+# Test D: AGENT_TOOLKIT_SENTENCE_TRANSFORMERS_CACHE env var override works
+CUSTOM_CACHE="/tmp/custom-st-cache-$$"
+CACHE_OVERRIDE="$(AGENT_TOOLKIT_SENTENCE_TRANSFORMERS_CACHE="$CUSTOM_CACHE" python3 -c "
+import sys
+sys.path.insert(0, '$SCRATCH/.claude/skills/memory/scripts')
+from embed import _LOCAL_CACHE_DIR
+print(_LOCAL_CACHE_DIR)
+")"
+if [[ "$CACHE_OVERRIDE" != "$CUSTOM_CACHE" ]]; then
+  echo "FAIL: AGENT_TOOLKIT_SENTENCE_TRANSFORMERS_CACHE env override didn't apply ('$CACHE_OVERRIDE' != '$CUSTOM_CACHE')" >&2
+  exit 1
+fi
+# Test E: recall.py with MEMORY_USE_API_EMBEDDINGS=false + no sentence-
+# transformers + no API key → falls back to grep-only cleanly (exit 0).
+# This is the "offline + no local model" degraded-graceful path.
+MFB="$(mktemp -d)"
+mkdir -p "$MFB/personal-private/workflow"
+cat > "$MFB/personal-private/workflow/fb-entry.md" << 'FB_EOF'
+---
+kind: workflow
+status: active
+slug: fb-entry
+tags: [evolve, fallback]
+---
+Evolve test body for fallback path.
+FB_EOF
+unset ANTHROPIC_API_KEY VOYAGE_API_KEY
+FB_OUT="$(MEMORY_USE_API_EMBEDDINGS=false python3 "$RECALL_PY" --vault-path "$MFB" query "evolve" 2>&1)"
+FB_EXIT=$?
+if [[ $FB_EXIT -ne 0 ]]; then
+  echo "FAIL: recall.py fallback path exited $FB_EXIT (expected 0 for graceful grep-only)" >&2
+  echo "    output: $FB_OUT" >&2
+  rm -rf "$MFB"
+  exit 1
+fi
+if ! echo "$FB_OUT" | grep -qE "fb-entry"; then
+  echo "FAIL: fallback grep-only path did not return fb-entry" >&2
+  echo "    output: $FB_OUT" >&2
+  rm -rf "$MFB"
+  exit 1
+fi
+# Should emit stderr warning about embedding unavailable (local missing).
+if ! echo "$FB_OUT" | grep -qE "embedding unavailable"; then
+  echo "FAIL: fallback path did not emit 'embedding unavailable' stderr warning" >&2
+  echo "    output: $FB_OUT" >&2
+  rm -rf "$MFB"
+  exit 1
+fi
+rm -rf "$MFB"
+
 # ── validate-manifests negative test: gemini-cli should error with v0.9.0 msg ─
 # Manifest containing 'gemini-cli' in supported_hosts must error with a clear
 # message pointing at the v0.9.0 CHANGELOG. Catches regressions if HOST_ENUM

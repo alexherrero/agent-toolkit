@@ -712,6 +712,89 @@ Archived content.
         Remove-Item -LiteralPath $mquery -Recurse -Force -ErrorAction SilentlyContinue
     }
 
+    # ── Embedding fallback path test (plan #7a part 2 task 4) ──────────────
+    Write-Host '==> Embedding fallback path test (plan #7a part 2 task 4)'
+    # Test A: env var resolution chain
+    $resolveDefault = (& {
+        Remove-Item -Path Env:MEMORY_USE_API_EMBEDDINGS -ErrorAction SilentlyContinue
+        python3 -c "import sys; sys.path.insert(0, r'$($scratch -replace '\\','/')/.claude/skills/memory/scripts'); from embed import _resolve_mode; print(_resolve_mode(None))"
+    }).Trim()
+    if ($resolveDefault -ne 'api') {
+        throw "default mode resolution should be 'api', got '$resolveDefault'"
+    }
+    $env:MEMORY_USE_API_EMBEDDINGS = 'false'
+    $resolveLocal = (python3 -c "import sys; sys.path.insert(0, r'$($scratch -replace '\\','/')/.claude/skills/memory/scripts'); from embed import _resolve_mode; print(_resolve_mode(None))").Trim()
+    Remove-Item -Path Env:MEMORY_USE_API_EMBEDDINGS -ErrorAction SilentlyContinue
+    if ($resolveLocal -ne 'local') {
+        throw "MEMORY_USE_API_EMBEDDINGS=false should resolve to 'local', got '$resolveLocal'"
+    }
+    # Test B: embed.py --mode local with no sentence-transformers → exit 2
+    $embedPy = Join-Path $scratch '.claude/skills/memory/scripts/embed.py'
+    $embedOutFile = Join-Path $scratch '.embed-local-out.log'
+    python3 $embedPy 'test text' '--mode' 'local' 2>&1 | Out-File -FilePath $embedOutFile
+    $embedExit = $LASTEXITCODE
+    if ($embedExit -ne 2) {
+        throw "embed.py --mode local exited $embedExit (expected 2 for graceful EmbeddingUnavailable)"
+    }
+    $embedOut = Get-Content -LiteralPath $embedOutFile -Raw
+    if ($embedOut -notmatch 'sentence-transformers') {
+        throw "embed.py --mode local error missing sentence-transformers install hint. Output: $embedOut"
+    }
+    Remove-Item -LiteralPath $embedOutFile -ErrorAction SilentlyContinue
+    # Test C: cache dir constant
+    $cacheDir = (python3 -c "import sys; sys.path.insert(0, r'$($scratch -replace '\\','/')/.claude/skills/memory/scripts'); from embed import _LOCAL_CACHE_DIR; print(_LOCAL_CACHE_DIR)").Trim()
+    if ($cacheDir -notmatch 'agent-toolkit') {
+        throw "_LOCAL_CACHE_DIR should contain 'agent-toolkit', got '$cacheDir'"
+    }
+    if ($cacheDir -notmatch 'sentence-transformers') {
+        throw "_LOCAL_CACHE_DIR should contain 'sentence-transformers', got '$cacheDir'"
+    }
+    # Test D: AGENT_TOOLKIT_SENTENCE_TRANSFORMERS_CACHE env override
+    $customCache = Join-Path ([System.IO.Path]::GetTempPath()) "custom-st-cache-$([Guid]::NewGuid().ToString('N'))"
+    $env:AGENT_TOOLKIT_SENTENCE_TRANSFORMERS_CACHE = $customCache
+    $cacheOverride = (python3 -c "import sys; sys.path.insert(0, r'$($scratch -replace '\\','/')/.claude/skills/memory/scripts'); from embed import _LOCAL_CACHE_DIR; print(_LOCAL_CACHE_DIR)").Trim()
+    Remove-Item -Path Env:AGENT_TOOLKIT_SENTENCE_TRANSFORMERS_CACHE -ErrorAction SilentlyContinue
+    # Use case-insensitive comparison on Windows since paths may differ in casing/separators.
+    if (-not ($cacheOverride.Replace('\','/') -ieq $customCache.Replace('\','/'))) {
+        throw "AGENT_TOOLKIT_SENTENCE_TRANSFORMERS_CACHE override didn't apply ('$cacheOverride' != '$customCache')"
+    }
+    # Test E: recall.py with MEMORY_USE_API_EMBEDDINGS=false + no sentence-
+    # transformers + no API key → grep-only fallback works (exit 0).
+    $mfb = Join-Path ([System.IO.Path]::GetTempPath()) ("toolkit-mfb-" + [System.Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path (Join-Path $mfb 'personal-private/workflow') -Force | Out-Null
+    try {
+        @"
+---
+kind: workflow
+status: active
+slug: fb-entry
+tags: [evolve, fallback]
+---
+Evolve test body for fallback path.
+"@ | Out-File -FilePath (Join-Path $mfb 'personal-private/workflow/fb-entry.md') -Encoding utf8
+
+        Remove-Item -Path Env:ANTHROPIC_API_KEY -ErrorAction SilentlyContinue
+        Remove-Item -Path Env:VOYAGE_API_KEY -ErrorAction SilentlyContinue
+        $env:MEMORY_USE_API_EMBEDDINGS = 'false'
+        $fbStdoutFile = Join-Path $mfb '.fb-stdout.log'
+        $fbStderrFile = Join-Path $mfb '.fb-stderr.log'
+        $fbProc = Start-Process -FilePath 'python3' -ArgumentList @($recallPy, '--vault-path', $mfb, 'query', 'evolve') -NoNewWindow -Wait -RedirectStandardOutput $fbStdoutFile -RedirectStandardError $fbStderrFile -PassThru
+        Remove-Item -Path Env:MEMORY_USE_API_EMBEDDINGS -ErrorAction SilentlyContinue
+        if ($fbProc.ExitCode -ne 0) {
+            throw "recall.py fallback path exited $($fbProc.ExitCode); expected 0 for grep-only"
+        }
+        $fbStdout = Get-Content -LiteralPath $fbStdoutFile -Raw
+        $fbStderr = Get-Content -LiteralPath $fbStderrFile -Raw
+        if ($fbStdout -notmatch 'fb-entry') {
+            throw "fallback grep-only path did not return fb-entry. stdout: $fbStdout"
+        }
+        if ($fbStderr -notmatch 'embedding unavailable') {
+            throw "fallback path did not emit 'embedding unavailable' stderr warning. stderr: $fbStderr"
+        }
+    } finally {
+        Remove-Item -LiteralPath $mfb -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
     # ── validate-manifests negative test: gemini-cli rejected with v0.9.0 msg ─
     Write-Host '==> validate-manifests negative test (gemini-cli rejected)'
     $vneg = Join-Path ([System.IO.Path]::GetTempPath()) ("toolkit-vneg-" + [System.Guid]::NewGuid().ToString('N'))
