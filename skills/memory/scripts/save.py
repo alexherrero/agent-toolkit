@@ -163,12 +163,26 @@ def save_entry(
     # Python 3.10+; bytes mode works on 3.9+.)
     target.write_bytes(content.encode("utf-8"))
 
-    # Embedding step is a no-op stub until plan #7a part 1 task 4.
-    # Log to stderr so callers can grep but stdout stays clean for tests.
-    print(
-        "embedding queued (deferred to task 4)",
-        file=sys.stderr,
-    )
+    # Enqueue async embedding + vec-index upsert (task 4).
+    # File write is complete; queueing is fast + synchronous + never raises
+    # on missing deps (queue is JSONL append; sqlite-vec required only at
+    # drain time). Operators run `python3 vec_index.py drain` (or future
+    # idle-time hook) to actually process the queue.
+    try:
+        import vec_index  # type: ignore
+        # Embed text = title-frontmatter-tags + body's first paragraph
+        # (per parent design's Infrastructure section). For v1 we use
+        # the slug + tags + first 500 chars of body — captures enough
+        # semantic content for recall without huge embedding inputs.
+        first_para = body[:500]
+        tag_str = ", ".join(tags) if tags else ""
+        embed_text = f"{slug} [{tag_str}]\n\n{first_para}"
+        rel_path = str(target.relative_to(vault)).replace(os.sep, "/")
+        vec_index.enqueue(vault, rel_path, "upsert", text=embed_text)
+    except Exception as e:  # pragma: no cover
+        # Queueing should never fail in practice, but if it does (e.g.
+        # vault filesystem read-only), log + continue. File write succeeded.
+        print(f"warning: queue append failed: {e}", file=sys.stderr)
 
     return target
 

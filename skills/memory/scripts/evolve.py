@@ -262,12 +262,37 @@ def evolve_entry(
         new_path.write_bytes(new_content.encode("utf-8"))
         old.unlink()
 
-    # Vec-index update stub (deferred to task 4).
-    print(
-        f"vec-index update queued for: {new_path}, {archive_path} "
-        f"(deferred to task 4)",
-        file=sys.stderr,
-    )
+    # Enqueue async vec-index ops (task 4):
+    #   - delete old entry's index row (if path changed; or upsert if in-place)
+    #   - upsert new entry's index row
+    #   - upsert archive entry's index row (archive is searchable too, but
+    #     recall filters skip status:superseded by default — index entry
+    #     exists for `/memory search --include-superseded` future use)
+    try:
+        import vec_index  # type: ignore
+        new_rel = str(new_path.relative_to(vault)).replace(os.sep, "/")
+        archive_rel = str(archive_path.relative_to(vault)).replace(os.sep, "/")
+        old_rel = str(old.relative_to(vault)).replace(os.sep, "/") if new_path != old else None
+
+        new_tags = new_fm.get("tags") or []
+        tag_str = ", ".join(str(t) for t in new_tags) if new_tags else ""
+        new_first_para = new_body[:500]
+        new_slug_val = new_fm.get("slug", "")
+        new_embed_text = f"{new_slug_val} [{tag_str}]\n\n{new_first_para}"
+        vec_index.enqueue(vault, new_rel, "upsert", text=new_embed_text)
+
+        old_first_para = body[:500]
+        old_tags = archive_fm.get("tags") or []
+        old_tag_str = ", ".join(str(t) for t in old_tags) if old_tags else ""
+        old_slug_val = archive_fm.get("slug", "")
+        archive_embed_text = f"{old_slug_val} [{old_tag_str}]\n\n{old_first_para}"
+        vec_index.enqueue(vault, archive_rel, "upsert", text=archive_embed_text)
+
+        if old_rel is not None:
+            # Rename case: delete old index row (the file is gone from old_rel).
+            vec_index.enqueue(vault, old_rel, "delete")
+    except Exception as e:  # pragma: no cover
+        print(f"warning: queue append failed: {e}", file=sys.stderr)
 
     return (new_path, archive_path)
 

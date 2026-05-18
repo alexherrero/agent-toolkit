@@ -34,13 +34,18 @@ try {
         '.agent/skills/design/templates/design-doc.md',
         # Standalone skill: memory (plan #7a part 1 task 1 ships scaffold;
         # task 2 of part 1 ships /memory save body + scripts/save.py;
-        # task 3 of part 1 ships /memory evolve body + scripts/evolve.py).
+        # task 3 of part 1 ships /memory evolve body + scripts/evolve.py;
+        # task 4 of part 1 ships embed.py + vec_index.py).
         '.claude/skills/memory/SKILL.md',
         '.claude/skills/memory/scripts/save.py',
         '.claude/skills/memory/scripts/evolve.py',
+        '.claude/skills/memory/scripts/embed.py',
+        '.claude/skills/memory/scripts/vec_index.py',
         '.agent/skills/memory/SKILL.md',
         '.agent/skills/memory/scripts/save.py',
         '.agent/skills/memory/scripts/evolve.py',
+        '.agent/skills/memory/scripts/embed.py',
+        '.agent/skills/memory/scripts/vec_index.py',
         # Standalone agent: evaluator. claude-code is single-file;
         # antigravity wraps the agent as a skill. (gemini-cli destination
         # .gemini/agents/evaluator.md removed in v0.9.0.)
@@ -278,6 +283,83 @@ try {
         }
     } finally {
         Remove-Item -LiteralPath $mevol -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    # ── embedding queue + vec-index wiring test (plan #7a part 1 task 4) ───
+    Write-Host '==> embedding queue + vec-index wiring test (plan #7a part 1 task 4)'
+    $mqueue = Join-Path ([System.IO.Path]::GetTempPath()) ("toolkit-mqueue-" + [System.Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $mqueue -Force | Out-Null
+    try {
+        $savePy = Join-Path $scratch '.claude/skills/memory/scripts/save.py'
+        $embedPy = Join-Path $scratch '.claude/skills/memory/scripts/embed.py'
+        $vecPy = Join-Path $scratch '.claude/skills/memory/scripts/vec_index.py'
+        foreach ($f in @($embedPy, $vecPy)) {
+            if (-not (Test-Path -LiteralPath $f)) {
+                throw "$f not installed"
+            }
+        }
+        # embed.py stub mode produces deterministic 384-d output
+        $embedOut = python3 $embedPy 'smoke test text' '--mode' 'stub' 2>$null
+        $embedOut = ($embedOut -join '').Trim()
+        $parsed = $embedOut | ConvertFrom-Json
+        if ($parsed.Count -ne 384) {
+            throw "embed.py stub mode returned $($parsed.Count)-d output, expected 384"
+        }
+        # Save 3 entries; queue should grow by 3
+        for ($i = 1; $i -le 3; $i++) {
+            "Body $i for queue test." | python3 $savePy 'preferences' "queue-test-$i" '--vault-path' $mqueue 2>$null | Out-Null
+        }
+        $queueFile = Join-Path $mqueue '_meta/embedding-queue.jsonl'
+        if (-not (Test-Path -LiteralPath $queueFile)) {
+            throw 'embedding queue file not created after 3 saves'
+        }
+        $lines = (Get-Content -LiteralPath $queueFile | Measure-Object -Line).Lines
+        if ($lines -ne 3) {
+            throw "expected 3 queue entries after 3 saves, got $lines"
+        }
+        $queueContent = Get-Content -LiteralPath $queueFile -Raw
+        if ($queueContent -notmatch '"op": "upsert"') {
+            throw "queue entries missing 'op': 'upsert' field"
+        }
+        # Drain in stub mode — outcome depends on sqlite-vec availability
+        $drainOut = python3 $vecPy '--vault-path' $mqueue 'drain' '--mode' 'stub' 2>$null
+        $drainOut = ($drainOut -join '').Trim()
+        $drainParsed = $drainOut | ConvertFrom-Json
+        if ($drainParsed.errors -ne 0) {
+            throw "drain reported $($drainParsed.errors) errors; should be 0 even when sqlite-vec absent (graceful-skip). Output: $drainOut"
+        }
+        if ($drainParsed.processed -eq 3) {
+            # Full happy path
+            $sizeOut = python3 $vecPy '--vault-path' $mqueue 'size' 2>$null
+            $sizeOut = ($sizeOut -join '').Trim()
+            $sizeParsed = $sizeOut | ConvertFrom-Json
+            if ($sizeParsed.size -ne 3) {
+                throw "drain processed 3 but index size is $($sizeParsed.size) (expected 3)"
+            }
+            if (Test-Path -LiteralPath $queueFile) {
+                throw 'queue file still exists after full drain (should be removed when remaining==0)'
+            }
+            Write-Host '    (sqlite-vec available — verified full happy path)'
+        } elseif ($drainParsed.skipped -eq 3) {
+            # Graceful-skip path
+            if (-not (Test-Path -LiteralPath $queueFile)) {
+                throw 'queue file removed despite graceful-skip (should remain pending)'
+            }
+            Write-Host '    (sqlite-vec unavailable — verified graceful-skip)'
+        } else {
+            throw "drain produced unexpected outcome (processed=$($drainParsed.processed), skipped=$($drainParsed.skipped), errors=$($drainParsed.errors))"
+        }
+        # File write never blocked: no API key + no local model → save still succeeds
+        Remove-Item -Path Env:ANTHROPIC_API_KEY -ErrorAction SilentlyContinue
+        Remove-Item -Path Env:VOYAGE_API_KEY -ErrorAction SilentlyContinue
+        Remove-Item -Path Env:MEMORY_USE_API_EMBEDDINGS -ErrorAction SilentlyContinue
+        'No-API body.' | python3 $savePy 'preferences' 'no-api-test' '--vault-path' $mqueue 2>$null | Out-Null
+        $noApiPath = Join-Path $mqueue 'personal-private/preferences/no-api-test.md'
+        if (-not (Test-Path -LiteralPath $noApiPath)) {
+            throw 'save failed when no embedding mode available (file write should NEVER be blocked)'
+        }
+    } finally {
+        Remove-Item -LiteralPath $mqueue -Recurse -Force -ErrorAction SilentlyContinue
     }
 
     # ── validate-manifests negative test: gemini-cli rejected with v0.9.0 msg ─

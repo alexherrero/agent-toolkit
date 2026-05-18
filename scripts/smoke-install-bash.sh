@@ -37,13 +37,20 @@ expected=(
   .agent/skills/design/templates/design-doc.md
   # Standalone skill: memory (plan #7a part 1 task 1 ships scaffold;
   # task 2 of part 1 ships /memory save body + scripts/save.py;
-  # task 3 of part 1 ships /memory evolve body + scripts/evolve.py).
+  # task 3 of part 1 ships /memory evolve body + scripts/evolve.py;
+  # task 4 of part 1 ships embedding + sqlite-vec integration via
+  # scripts/embed.py + scripts/vec_index.py — both wired into the async
+  # path from save.py + evolve.py via embedding-queue.jsonl).
   .claude/skills/memory/SKILL.md
   .claude/skills/memory/scripts/save.py
   .claude/skills/memory/scripts/evolve.py
+  .claude/skills/memory/scripts/embed.py
+  .claude/skills/memory/scripts/vec_index.py
   .agent/skills/memory/SKILL.md
   .agent/skills/memory/scripts/save.py
   .agent/skills/memory/scripts/evolve.py
+  .agent/skills/memory/scripts/embed.py
+  .agent/skills/memory/scripts/vec_index.py
   # Standalone agent: evaluator — claude-code is single-file destination;
   # antigravity wraps the agent as a skill. (gemini-cli destination
   # .gemini/agents/evaluator.md removed in v0.9.0.)
@@ -376,6 +383,109 @@ if echo "x" | python3 "$EVOLVE_PY" personal-private/preferences/smoke-evolve-ip.
   exit 1
 fi
 rm -rf "$MEVOL"
+
+# ── embedding queue + vec-index wiring test (plan #7a part 1 task 4) ───────
+# Verify save.py / evolve.py enqueue to <vault>/_meta/embedding-queue.jsonl
+# + drain operates gracefully whether sqlite-vec is installed or not. Full
+# happy-path (index populated, queue drained to zero) only runs if
+# sqlite-vec + enable_load_extension are both available — graceful-skip
+# otherwise (catches Apple system Python's missing enable_load_extension).
+echo "==> embedding queue + vec-index wiring test (plan #7a part 1 task 4)"
+MQUEUE="$(mktemp -d)"
+SAVE_PY="$SCRATCH/.claude/skills/memory/scripts/save.py"
+EVOLVE_PY="$SCRATCH/.claude/skills/memory/scripts/evolve.py"
+EMBED_PY="$SCRATCH/.claude/skills/memory/scripts/embed.py"
+VEC_PY="$SCRATCH/.claude/skills/memory/scripts/vec_index.py"
+for f in "$EMBED_PY" "$VEC_PY"; do
+  if [[ ! -f "$f" ]]; then
+    echo "FAIL: $f not installed (expected-files should have caught this)" >&2
+    rm -rf "$MQUEUE"
+    exit 1
+  fi
+done
+# Verify embed.py stub mode produces deterministic 384-d output.
+EMBED_OUT="$(python3 "$EMBED_PY" "smoke test text" --mode stub 2>/dev/null)"
+EMBED_LEN="$(echo "$EMBED_OUT" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)"
+if [[ "$EMBED_LEN" != "384" ]]; then
+  echo "FAIL: embed.py stub mode returned $EMBED_LEN-d output, expected 384" >&2
+  rm -rf "$MQUEUE"
+  exit 1
+fi
+# Save 3 entries; queue should grow by 3.
+for i in 1 2 3; do
+  echo "Body $i for queue test." | python3 "$SAVE_PY" preferences "queue-test-$i" --vault-path "$MQUEUE" >/dev/null 2>&1
+done
+QUEUE_FILE="$MQUEUE/_meta/embedding-queue.jsonl"
+if [[ ! -f "$QUEUE_FILE" ]]; then
+  echo "FAIL: embedding queue file not created after 3 saves" >&2
+  rm -rf "$MQUEUE"
+  exit 1
+fi
+QUEUE_LINES="$(wc -l < "$QUEUE_FILE" | tr -d ' ')"
+if [[ "$QUEUE_LINES" != "3" ]]; then
+  echo "FAIL: expected 3 queue entries after 3 saves, got $QUEUE_LINES" >&2
+  rm -rf "$MQUEUE"
+  exit 1
+fi
+# Each line should be valid JSON with op=upsert.
+if ! grep -qE '"op": "upsert"' "$QUEUE_FILE"; then
+  echo "FAIL: queue entries missing 'op': 'upsert' field" >&2
+  rm -rf "$MQUEUE"
+  exit 1
+fi
+# Drain in stub mode. Outcome depends on sqlite-vec availability:
+DRAIN_OUT="$(python3 "$VEC_PY" --vault-path "$MQUEUE" drain --mode stub 2>/dev/null)"
+PROCESSED="$(echo "$DRAIN_OUT" | python3 -c "import json,sys; print(json.load(sys.stdin)['processed'])" 2>/dev/null || echo 0)"
+SKIPPED="$(echo "$DRAIN_OUT" | python3 -c "import json,sys; print(json.load(sys.stdin)['skipped'])" 2>/dev/null || echo 0)"
+# Either processed==3 (sqlite-vec available) OR skipped==3 (graceful-skip).
+# Both are valid; reject other outcomes (e.g. errors > 0).
+ERRORS="$(echo "$DRAIN_OUT" | python3 -c "import json,sys; print(json.load(sys.stdin)['errors'])" 2>/dev/null || echo 99)"
+if [[ "$ERRORS" != "0" ]]; then
+  echo "FAIL: drain reported $ERRORS errors; should be 0 even when sqlite-vec absent (graceful-skip)" >&2
+  echo "    drain output: $DRAIN_OUT" >&2
+  rm -rf "$MQUEUE"
+  exit 1
+fi
+if [[ "$PROCESSED" == "3" ]]; then
+  # Full happy path: sqlite-vec available; index should now have 3 entries.
+  SIZE_OUT="$(python3 "$VEC_PY" --vault-path "$MQUEUE" size 2>/dev/null)"
+  SIZE_N="$(echo "$SIZE_OUT" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('size') or 0)" 2>/dev/null || echo 0)"
+  if [[ "$SIZE_N" != "3" ]]; then
+    echo "FAIL: drain processed 3 but index size is $SIZE_N (expected 3)" >&2
+    rm -rf "$MQUEUE"
+    exit 1
+  fi
+  # Queue file should be gone after successful drain.
+  if [[ -f "$QUEUE_FILE" ]]; then
+    echo "FAIL: queue file still exists after full drain (should be removed when remaining==0)" >&2
+    rm -rf "$MQUEUE"
+    exit 1
+  fi
+  echo "    (sqlite-vec available — verified full happy path: 3 saves → 3 indexed → queue empty)"
+elif [[ "$SKIPPED" == "3" ]]; then
+  # Graceful-skip path: sqlite-vec unavailable; queue stays + index is null.
+  if [[ ! -f "$QUEUE_FILE" ]]; then
+    echo "FAIL: queue file removed despite graceful-skip (should remain pending)" >&2
+    rm -rf "$MQUEUE"
+    exit 1
+  fi
+  echo "    (sqlite-vec unavailable — verified graceful-skip: 3 saves queued, drain skipped, queue intact)"
+else
+  echo "FAIL: drain produced unexpected outcome (processed=$PROCESSED, skipped=$SKIPPED, errors=$ERRORS)" >&2
+  echo "    drain output: $DRAIN_OUT" >&2
+  rm -rf "$MQUEUE"
+  exit 1
+fi
+# Verify file write is never blocked even with no embedding mode available.
+# Save with MEMORY_USE_API_EMBEDDINGS=true but no API key — save still works.
+unset ANTHROPIC_API_KEY VOYAGE_API_KEY MEMORY_USE_API_EMBEDDINGS
+echo "No-API body." | python3 "$SAVE_PY" preferences no-api-test --vault-path "$MQUEUE" >/dev/null 2>&1
+if [[ ! -f "$MQUEUE/personal-private/preferences/no-api-test.md" ]]; then
+  echo "FAIL: save failed when no embedding mode available (file write should NEVER be blocked)" >&2
+  rm -rf "$MQUEUE"
+  exit 1
+fi
+rm -rf "$MQUEUE"
 
 # ── validate-manifests negative test: gemini-cli should error with v0.9.0 msg ─
 # Manifest containing 'gemini-cli' in supported_hosts must error with a clear
