@@ -856,7 +856,7 @@ Workflow body $i containing keywords like budget and test.
         $psStdinFile = Join-Path $mbudget '.ps-stdin.log'
         $psStderrFile = Join-Path $mbudget '.ps-stderr.log'
         Set-Content -LiteralPath $psStdinFile -Value $psBudgetPayload -NoNewline
-        $psProc = Start-Process -FilePath 'python3' -ArgumentList @($recallPy, '--vault-path', $mbudget, 'prompt-submit', '--budget-ms', '0') -NoNewWindow -Wait -RedirectStandardInput $psStdinFile -RedirectStandardError $psStderrFile -PassThru
+        $psProc = Start-Process -FilePath 'python3' -ArgumentList @($recallPy, '--vault-path', $mbudget, 'prompt-submit', '--budget-ms=0') -NoNewWindow -Wait -RedirectStandardInput $psStdinFile -RedirectStandardError $psStderrFile -PassThru
         if ($psProc.ExitCode -ne 0) {
             throw "prompt-submit with tight budget exited $($psProc.ExitCode)"
         }
@@ -880,7 +880,7 @@ Workflow body $i containing keywords like budget and test.
             if ($LASTEXITCODE -ne 0) {
                 throw "session-start (iter $i) exited $LASTEXITCODE under tight budget — never-block contract broken"
             }
-            $loopProc = Start-Process -FilePath 'python3' -ArgumentList @($recallPy, '--vault-path', $mbudget, 'prompt-submit', '--budget-ms', '0') -NoNewWindow -Wait -RedirectStandardInput $psStdinFile -PassThru
+            $loopProc = Start-Process -FilePath 'python3' -ArgumentList @($recallPy, '--vault-path', $mbudget, 'prompt-submit', '--budget-ms=0') -NoNewWindow -Wait -RedirectStandardInput $psStdinFile -PassThru
             if ($loopProc.ExitCode -ne 0) {
                 throw "prompt-submit (iter $i) exited $($loopProc.ExitCode) under tight budget — never-block contract broken"
             }

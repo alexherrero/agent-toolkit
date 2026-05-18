@@ -195,7 +195,22 @@ def session_start(
 
     loaded_slugs: list[str] = []
     blocks: list[str] = []
-    overrun = False
+    # A non-positive budget is interpreted as "deadline already exceeded".
+    # Forces immediate overrun + partial-results path regardless of
+    # platform-specific monotonic clock resolution (Windows + some
+    # high-resolution-but-quantized environments could otherwise observe
+    # `time.monotonic() == deadline` on the first iteration check with
+    # budget=0, where the `>=` comparison might or might not trip).
+    # Operators using zero/negative budgets in production is a category
+    # error; this branch makes the degraded-graceful path deterministic
+    # for smoke tests + signals "you set this too low" via the
+    # transparency warning.
+    overrun = budget_ms <= 0
+    if overrun:
+        # Skip the entire walk — record no slugs; transparency line will
+        # report 0 loaded + warning. Equivalent to deadline tripping on
+        # iteration 1.
+        candidates = []
 
     for md_path in candidates:
         # Budget check before each file.
@@ -243,7 +258,7 @@ def session_start(
     )
     if overrun:
         transparency += (
-            f" (WARNING: 500ms time budget exceeded; partial results — "
+            f" (WARNING: {budget_ms}ms time budget exceeded; partial results — "
             f"{len(candidates) - len(loaded_slugs)} entries skipped)"
         )
     print(transparency, file=stderr)
@@ -631,24 +646,30 @@ def prompt_submit(
 
     always_load_paths = _collect_always_load_paths(vault)
 
-    try:
-        results = query(
-            vault=vault,
-            query_text=prompt,
-            k=k,
-            dedup_paths=always_load_paths,
-            include_inbox=include_inbox,
-            deadline=deadline,
-            mode=mode,
-            stderr=stderr,
-        )
-    except Exception as e:  # noqa: BLE001 — never block the prompt
-        print(
-            f"[memory-recall-prompt-submit] recall engine error ({type(e).__name__}: {e}); "
-            "skipping injection",
-            file=stderr,
-        )
-        return 0
+    # Non-positive budget → deterministic immediate-overrun path (matches
+    # session_start's force-overrun branch). Smoke tests rely on this to
+    # exercise the degraded-graceful path without depending on machine speed.
+    if budget_ms <= 0:
+        results: list[dict] = []
+    else:
+        try:
+            results = query(
+                vault=vault,
+                query_text=prompt,
+                k=k,
+                dedup_paths=always_load_paths,
+                include_inbox=include_inbox,
+                deadline=deadline,
+                mode=mode,
+                stderr=stderr,
+            )
+        except Exception as e:  # noqa: BLE001 — never block the prompt
+            print(
+                f"[memory-recall-prompt-submit] recall engine error ({type(e).__name__}: {e}); "
+                "skipping injection",
+                file=stderr,
+            )
+            return 0
 
     # Output assembly: only print stdout when we have hits.
     loaded_slugs: list[str] = []
@@ -676,7 +697,7 @@ def prompt_submit(
             print(_format_recall_result(result, body, fm), file=stdout)
             loaded_slugs.append(result["slug"])
 
-    overrun = time.monotonic() >= deadline
+    overrun = (budget_ms <= 0) or (time.monotonic() >= deadline)
     slug_list = ", ".join(loaded_slugs) if loaded_slugs else "(none)"
     transparency = (
         f"[memory-recall-prompt-submit] Loaded {len(loaded_slugs)} relevant "
