@@ -1012,7 +1012,8 @@ print('RESULTS_COUNT:', len(results))
     # Seed transcript at ~/.claude/projects/<cwd-slug>/<session-id>.jsonl
     $mrstop = Join-Path ([System.IO.Path]::GetTempPath()) ("toolkit-mrstop-" + [System.Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $mrstop -Force | Out-Null
-    $rstopCwdSlug = "-" + ($mrstop -replace '[\\/]', '-')
+    # Match the hook's cwd-slug formula (replace / + \ + : with '-' / '').
+    $rstopCwdSlug = "-" + (($mrstop -replace '[\\/]', '-') -replace ':', '')
     $rstopTranscriptDir = Join-Path $HOME ".claude/projects/$rstopCwdSlug"
     New-Item -ItemType Directory -Path $rstopTranscriptDir -Force | Out-Null
     $rstopSessionId = "f1e2d3c4-b5a6-7c8d-9e0f-abcdef012345"
@@ -1032,8 +1033,10 @@ print('RESULTS_COUNT:', len(results))
         Copy-Item -LiteralPath (Join-Path $scratch '.claude/skills/memory/scripts/reflect.py') -Destination (Join-Path $mrstop '.claude/skills/memory/scripts/reflect.py')
         Copy-Item -LiteralPath $reflectStopPs1 -Destination (Join-Path $mrstop '.claude/hooks/memory-reflect-stop.ps1')
 
-        # Test A: happy-path Stop payload
-        $rstopPayload = '{"session_id":"' + $rstopSessionId + '","cwd":"' + $mrstop.Replace('\','\\') + '","hookEventName":"Stop"}'
+        # Test A: happy-path Stop payload. Use the JSON-safe form of $mrstop
+        # (backslashes doubled for JSON string escaping).
+        $cwdEscaped = $mrstop.Replace('\','\\')
+        $rstopPayload = '{"session_id":"' + $rstopSessionId + '","cwd":"' + $cwdEscaped + '","hookEventName":"Stop"}'
         $stdinFile = Join-Path $mrstop '.stdin.log'
         $stdoutFile = Join-Path $mrstop '.stdout.log'
         $stderrFile = Join-Path $mrstop '.stderr.log'
@@ -1081,7 +1084,7 @@ print('RESULTS_COUNT:', len(results))
         Remove-Item -LiteralPath $stdinFile, $stderrFile -ErrorAction SilentlyContinue
 
         # Test D: missing transcript → graceful skip
-        $dPayload = '{"session_id":"deadbeef-cafe-babe-feed-fedcba987654","cwd":"' + $mrstop.Replace('\','\\') + '","hookEventName":"Stop"}'
+        $dPayload = '{"session_id":"deadbeef-cafe-babe-feed-fedcba987654","cwd":"' + $cwdEscaped + '","hookEventName":"Stop"}'
         Set-Content -LiteralPath $stdinFile -Value $dPayload -NoNewline
         $proc4 = Start-Process -FilePath 'pwsh' -ArgumentList @('-NoProfile','-File',(Join-Path $mrstop '.claude/hooks/memory-reflect-stop.ps1')) -WorkingDirectory $mrstop -NoNewWindow -Wait -RedirectStandardInput $stdinFile -RedirectStandardError $stderrFile -PassThru
         if ($proc4.ExitCode -ne 0) {

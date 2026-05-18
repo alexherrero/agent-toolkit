@@ -49,8 +49,13 @@ $SessionId = $Parts[0]
 $Cwd = if ($Parts.Length -gt 1 -and $Parts[1]) { $Parts[1] } else { (Get-Location).Path }
 
 # Compute transcript path: ~/.claude/projects/<cwd-slug>/<session_id>.jsonl
-# CWD slug: replace path separators with '-' + add leading '-'.
-$CwdSlug = "-" + ($Cwd -replace '[\\/]', '-')
+# CWD slug: replace path separators + drive-letter colons with '-' + leading '-'.
+# The ':' replacement is Windows-specific — drive letters like "C:" produce
+# invalid filename chars otherwise. The exact slug convention Claude Code uses
+# on Windows may differ from this; if it does, the hook gracefully misses the
+# transcript (exit 0 + "transcript not found"). Tracked as a Windows-recall
+# follow-up if real-world dogfood surfaces a mismatch.
+$CwdSlug = "-" + (($Cwd -replace '[\\/]', '-') -replace ':', '')
 $Transcript = Join-Path $HOME ".claude/projects/$CwdSlug/$SessionId.jsonl"
 
 if (-not (Test-Path $Transcript)) {
