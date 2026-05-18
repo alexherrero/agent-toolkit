@@ -420,22 +420,104 @@ Both paths (skill-body `Write` + script-CLI Python) produce byte-identical files
 
 ### `/memory reflect`
 
+User-invokable trigger for the reflection sidecar — mines a Claude Code session transcript for durable candidate entries + surfaces them for triage. Two parallel mining passes: the **3-category mine** (Successful Workflows / User Preferences / Fixes & Workarounds) produces MemoryVault candidates; the **idea-candidate mine** (follow-ups / future projects / research candidates) produces ideas for the future idea-ledger (plan #7a part 4 will subscribe + persist these).
+
+The same mining logic runs automatically via the Stop-event hook (after every session, lands in plan #7a part 3 task 3) + the idle-time hook (after N minutes idle, also recovers crashed sessions, lands in task 4). `/memory reflect` is the manual trigger for on-demand runs against arbitrary transcripts (re-running over an old session, testing the mining heuristic, dogfooding new patterns before they land in `reflect.py`).
+
+#### Invocation shape
+
+```
+/memory reflect [--session <path>] [--memory-only | --idea-only] [--summary]
+```
+
+| Arg | Required | Default | Meaning |
+|---|---|---|---|
+| `--session <path>` | no | current Claude Code session transcript at `~/.claude/projects/<repo>/<session-id>.jsonl` | Absolute path to the JSONL transcript to mine. |
+| `--memory-only` | no | false | Emit only the 3-category memory candidates (skip idea pass). Mutually exclusive with `--idea-only`. |
+| `--idea-only` | no | false | Emit only the idea candidates (skip memory pass). |
+| `--summary` | no | false | Prepend a 1-line summary (messages processed + candidate counts per pass) before the per-candidate output. |
+
+#### Step-by-step flow
+
+**Step 1 — Resolve transcript path.** If `--session` is set, use it directly. Otherwise look up the current Claude Code session transcript at `~/.claude/projects/<repo-dir-as-slug>/<session-id>.jsonl` where `<repo-dir-as-slug>` is the current working directory's path with `/` replaced by `-` and a leading `-`. Verify the resolved path exists; halt with `"Transcript not found: <path>"` if missing.
+
+**Step 2 — Call the canonical mining module.** The deterministic implementation lives at `skills/memory/scripts/reflect.py`. Invoke via the dispatched Python script (operator path) or follow the agent-driven flow below (Claude Code in-session path). Both produce the same set of categorized candidates — the Python script's regex catalog is intentionally simple + tunable (Tech Debt #7); agent-driven runs can apply semantic judgment beyond what regex catches.
+
+**Step 3 — 3-category mine.** Scan user + assistant messages for:
+
+- **Successful Workflows** — tool-use sequences repeated 3+ times, multi-step procedures the user approved of. Look for: agent ran command sequence → user said "good" / "ship it" / no correction → same sequence reappears later.
+- **User Preferences** — explicit user statements: "always X" / "never Y" / "I prefer Z" / "use X not Y" / "don't include Y". HIGH-confidence (explicit user signal). Also: user corrected the agent ("no, that's wrong" / "you should have X") → MEDIUM-confidence.
+- **Fixes & Workarounds** — error/bug + nearby resolution: "fixed by X" / "resolved by Y" / "workaround: Z" / "the bug was caused by W". MEDIUM-confidence.
+
+**Step 4 — Idea-candidate mine.** Scan for forward-looking statements: "we should also" / "later we could" / "follow-up:" / "could be its own project" / "as a follow-up". Each candidate gets a 2-sentence summary. Idea-ledger persistence is deferred to plan #7a part 4; this part just surfaces the candidates as in-memory objects.
+
+**Step 5 — Score each candidate (instrumentation per Tech Debt #7).** For every candidate produced in steps 3-4, attach:
+
+- `category`: `preferences` / `workflow` / `fix` / `idea`
+- `confidence`: `HIGH` / `MEDIUM` / `LOW`
+- `slug` suggestion (kebab-case)
+- `title` (1-line)
+- `body` (markdown ready for `/memory save`)
+- `rationale` (1 sentence — which pattern matched, why it surfaced)
+- `excerpts` (verbatim transcript snippets supporting the candidate)
+- `occurrences` (match count)
+
+The rationale + excerpts + occurrences fields are the load-bearing surface for [Use-The-Memory-Skill troubleshooting](Use-The-Memory-Skill.md) + the future `/memory inspect` command — they let the operator audit "why did this candidate get categorized this way?".
+
+**Step 6 — Tri-modal routing** (lands in plan #7a part 3 task 5 — for now, this step displays candidates grouped by confidence without auto-saving anything).
+
+- `HIGH` candidates → auto-save via `/memory save <category> <slug>` (task 5 wires the actual save call).
+- `MEDIUM` candidates → interactive review prompt with options: approve (save as-is) / edit (modify body or slug, then save) / reject (drop) / skip (defer to next session) / supersede-existing-X (call `/memory evolve` against the named existing entry). Task 5 builds this prompt UX.
+- `LOW` candidates → save to `MemoryVault/personal-private/_inbox/<slug>.md` for batch triage later (task 5 wires the `_inbox/` write).
+
+`memory.review_mode: silent` toggle (lands with task 5) auto-approves MEDIUM candidates without prompting — useful for non-interactive sessions or operators who trust the heuristic.
+
+**Step 7 — Return confirmation.** Display a summary:
+
+```
+Reflection complete. Mined <N> memory candidates + <M> idea candidates:
+  preferences: <high-count> HIGH / <medium-count> MEDIUM / <low-count> LOW
+  workflow:    <high-count> HIGH / <medium-count> MEDIUM / <low-count> LOW
+  fix:         <high-count> HIGH / <medium-count> MEDIUM / <low-count> LOW
+  ideas:       <total>
+
+Routed:
+  <H> saved automatically (HIGH)
+  <M> sent to interactive review (MEDIUM)
+  <L> queued in _inbox/ (LOW)
+```
+
+(Until task 5 ships, the "Routed" section reads `<deferred to plan #7a part 3 task 5>` and no actual save happens — the candidates print to stdout for review only.)
+
+#### Canonical Python implementation
+
+The agent's in-context mining (steps 3-4 above) follows the same heuristic as `skills/memory/scripts/reflect.py`. Operators can invoke the Python script directly for scripting / dogfooding / hook execution:
+
+```bash
+python3 ~/Antigravity/agent-toolkit/skills/memory/scripts/reflect.py \
+  ~/.claude/projects/<repo>/<session-id>.jsonl \
+  --summary
+```
+
+Output: one JSON record per line (`{"pass": "memory", "category": ..., "confidence": ..., "slug": ..., ...}` or `{"pass": "idea", ...}`). The Stop-event hook (task 3) + idle-time hook (task 4) invoke this script — the skill body's in-session path is for interactive review surfaces where agent semantic judgment adds value beyond regex.
+
+#### Failure modes (graceful)
+
+- **Transcript not found** → halt step 1 with clear next-step ("set --session to a valid path, or run inside a Claude Code session for default-path resolution").
+- **Malformed JSONL lines in transcript** (Claude Code crashed mid-write, partial JSON line) → skipped silently; mining continues on the remaining lines.
+- **Empty transcript** → exit 0 with `Reflection complete. Mined 0 memory candidates + 0 idea candidates.` summary; no-op.
+- **No candidates found** → emit summary line with all-zero counts; no per-candidate output; exit 0.
+- **`reflect.py` not installed at expected path** (agent has Bash but the script is missing) → fall back to the in-context agent-driven flow above. The skill body is self-contained; the Python script is an optimization.
+
+#### Anti-patterns
+
+- **Don't auto-save HIGH-confidence candidates without showing them first.** Even HIGH-confidence patterns can be false positives (e.g., user said "always X" but meant only in this specific context). Display before saving.
+- **Don't save candidates to `_inbox/` without the rationale + excerpts.** The whole point of `_inbox/` is batch triage later; without the supporting context the operator can't decide.
+- **Don't dedup aggressively across reflections.** If the same pattern appears in two sessions, count it as 2 occurrences (not 1 with `seen=true`). The aggregate-occurrences count drives confidence routing.
+- **Don't write to the idea-ledger directly from this skill.** Idea-candidate persistence is plan #7a part 4's scope. This skill emits candidates as in-memory objects + lets the future `/memory ideas` skill subscribe.
+
 > [!NOTE]
-> **Status**: stub. Full body lands in plan #7a **part 3** (`reflection-and-recovery`). See `.harness/designs/memoryvault/queued-plans/reflection-and-recovery.PLAN.md` for the queued plan.
-
-User-invokable trigger for the reflection sidecar logic. Two parallel mining passes over a session transcript: (a) the **3-category mine** (Successful Workflows / User Preferences / Fixes & Workarounds) writes MemoryVault entries via `/memory save`; (b) the **idea-candidate mine** (follow-ups / project ideas / research candidates) writes to `~/Obsidian/Ideas.md` + `MemoryVault/personal-private/_idea-incubator/<slug>/` via the idea-ledger flow (lands in plan #7a part 4).
-
-Tri-modal confidence routing applies: HIGH-confidence candidates auto-save; MEDIUM go through interactive review; LOW land in `_inbox/` for batch triage. Controlled by `memory.review_mode: interactive (default) | silent`.
-
-The same logic runs automatically via Stop-event hook (after every session) + idle-time hook (after N minutes idle, also recovers crashed sessions). `/memory reflect` is the manual trigger for on-demand runs.
-
-**Planned invocation shape** (subject to refinement in plan #7a part 3):
-
-```
-/memory reflect [--session <path>]
-```
-
-Defaults to the current Claude Code session transcript.
+> **Tri-modal routing implementation status**: plan #7a part 3 task 5 wires the actual HIGH→auto-save / MEDIUM→interactive-review / LOW→_inbox/ branches. Tasks 1-2 (this commit) ship the mining + skill body; tasks 3-4 add Stop + idle triggers; task 5 closes the routing loop; task 6 adds crash-recovery markers; task 7 documents the full surface.
 
 ### `/memory search`
 
