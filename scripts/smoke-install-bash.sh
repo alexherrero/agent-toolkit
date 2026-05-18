@@ -47,12 +47,14 @@ expected=(
   .claude/skills/memory/scripts/embed.py
   .claude/skills/memory/scripts/vec_index.py
   .claude/skills/memory/scripts/recall.py
+  .claude/skills/memory/scripts/reflect.py
   .agent/skills/memory/SKILL.md
   .agent/skills/memory/scripts/save.py
   .agent/skills/memory/scripts/evolve.py
   .agent/skills/memory/scripts/embed.py
   .agent/skills/memory/scripts/vec_index.py
   .agent/skills/memory/scripts/recall.py
+  .agent/skills/memory/scripts/reflect.py
   # Standalone agent: evaluator — claude-code is single-file destination;
   # antigravity wraps the agent as a skill. (gemini-cli destination
   # .gemini/agents/evaluator.md removed in v0.9.0.)
@@ -1133,6 +1135,108 @@ for i in 1 2 3 4 5; do
   fi
 done
 rm -rf "$MBUDGET"
+
+# ── Reflection mining module test (plan #7a part 3 task 1) ─────────────────
+# Verify reflect.py mines a seeded fixture transcript into the 4 expected
+# candidate categories: preferences (HIGH from "always X"), preferences
+# (MEDIUM/LOW from user correction), fix (MEDIUM/LOW from error+fix), idea
+# (MEDIUM from "we should also"). Workflow detection (tool-use frequency
+# threshold) gets a separate seed.
+echo "==> Reflection mining module test (plan #7a part 3 task 1)"
+REFLECT_PY="$SCRATCH/.claude/skills/memory/scripts/reflect.py"
+if [[ ! -f "$REFLECT_PY" ]]; then
+  echo "FAIL: reflect.py not installed at $REFLECT_PY" >&2
+  exit 1
+fi
+MREFLECT="$(mktemp -d)"
+cat > "$MREFLECT/transcript.jsonl" << 'REF_EOF'
+{"type":"queue-operation","content":"intro"}
+{"type":"user","message":{"role":"user","content":"Always use bullet points for status reports, never paragraphs."},"uuid":"u1"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Got it."},{"type":"tool_use","name":"Bash"}]},"uuid":"a1"}
+{"type":"user","message":{"role":"user","content":"No, that's wrong. You should have added a test plan section."},"uuid":"u2"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash"}]},"uuid":"a2"}
+{"type":"user","message":{"role":"user","content":"The CI bug was caused by line endings. Fixed by switching to write_bytes."},"uuid":"u3"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash"}]},"uuid":"a3"}
+{"type":"user","message":{"role":"user","content":"We should also build a memory inspect command later for tuning recall weights — could be its own follow-up plan."},"uuid":"u4"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Read"}]},"uuid":"a4"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash"}]},"uuid":"a5"}
+REF_EOF
+REFLECT_OUT="$(python3 "$REFLECT_PY" "$MREFLECT/transcript.jsonl" --summary 2>/dev/null)"
+# Test 1: summary line reports messages processed + candidate counts
+if ! echo "$REFLECT_OUT" | grep -qE '"pass": "summary".*"messages_processed": 9'; then
+  echo "FAIL: summary line missing or wrong messages_processed count" >&2
+  echo "    output: $REFLECT_OUT" >&2
+  rm -rf "$MREFLECT"
+  exit 1
+fi
+# Test 2: HIGH preferences from "Always use bullet points" pattern
+if ! echo "$REFLECT_OUT" | grep -qE '"category": "preferences", "confidence": "HIGH".*always.*bullet'; then
+  echo "FAIL: HIGH-confidence preferences candidate missing for 'Always use bullet points' pattern" >&2
+  echo "    output: $REFLECT_OUT" >&2
+  rm -rf "$MREFLECT"
+  exit 1
+fi
+# Test 3: correction candidate present (MEDIUM-initial → LOW after 1-occurrence demotion)
+if ! echo "$REFLECT_OUT" | grep -qE '"rationale": "user correction signal"'; then
+  echo "FAIL: correction-pattern candidate missing" >&2
+  echo "    output: $REFLECT_OUT" >&2
+  rm -rf "$MREFLECT"
+  exit 1
+fi
+# Test 4: fix candidate from "Fixed by" pattern
+if ! echo "$REFLECT_OUT" | grep -qE '"category": "fix".*"rationale": "explicit fix statement"'; then
+  echo "FAIL: fix candidate missing for 'Fixed by' pattern" >&2
+  echo "    output: $REFLECT_OUT" >&2
+  rm -rf "$MREFLECT"
+  exit 1
+fi
+# Test 5: idea candidate from "We should also" pattern
+if ! echo "$REFLECT_OUT" | grep -qE '"pass": "idea".*"rationale": "explicit follow-up suggestion"'; then
+  echo "FAIL: idea candidate missing for 'We should also' pattern" >&2
+  echo "    output: $REFLECT_OUT" >&2
+  rm -rf "$MREFLECT"
+  exit 1
+fi
+# Test 6: workflow candidate (Bash used 4x → MEDIUM workflow)
+if ! echo "$REFLECT_OUT" | grep -qE '"category": "workflow".*"confidence": "MEDIUM".*Bash.*4x'; then
+  echo "FAIL: workflow candidate missing (expected Bash used 4x → MEDIUM)" >&2
+  echo "    output: $REFLECT_OUT" >&2
+  rm -rf "$MREFLECT"
+  exit 1
+fi
+# Test 7: --memory-only flag skips idea pass
+MEM_ONLY_OUT="$(python3 "$REFLECT_PY" "$MREFLECT/transcript.jsonl" --memory-only 2>/dev/null)"
+if echo "$MEM_ONLY_OUT" | grep -qE '"pass": "idea"'; then
+  echo "FAIL: --memory-only flag did not suppress idea pass" >&2
+  rm -rf "$MREFLECT"
+  exit 1
+fi
+# Test 8: --idea-only flag skips memory pass
+IDEA_ONLY_OUT="$(python3 "$REFLECT_PY" "$MREFLECT/transcript.jsonl" --idea-only 2>/dev/null)"
+if echo "$IDEA_ONLY_OUT" | grep -qE '"pass": "memory"'; then
+  echo "FAIL: --idea-only flag did not suppress memory pass" >&2
+  rm -rf "$MREFLECT"
+  exit 1
+fi
+# Test 9: missing transcript → exit 1 + clear error
+MISSING_EXIT=0
+python3 "$REFLECT_PY" /nonexistent/path/$$ 2>/dev/null || MISSING_EXIT=$?
+if [[ $MISSING_EXIT -ne 1 ]]; then
+  echo "FAIL: reflect.py on missing transcript exited $MISSING_EXIT (expected 1)" >&2
+  rm -rf "$MREFLECT"
+  exit 1
+fi
+# Test 10: empty transcript → exit 0 with 0 candidates
+EMPTY_TRANSCRIPT="$MREFLECT/empty.jsonl"
+: > "$EMPTY_TRANSCRIPT"
+EMPTY_OUT="$(python3 "$REFLECT_PY" "$EMPTY_TRANSCRIPT" --summary 2>/dev/null)"
+if ! echo "$EMPTY_OUT" | grep -qE '"messages_processed": 0'; then
+  echo "FAIL: empty transcript did not produce 'messages_processed: 0' summary" >&2
+  echo "    output: $EMPTY_OUT" >&2
+  rm -rf "$MREFLECT"
+  exit 1
+fi
+rm -rf "$MREFLECT"
 
 # ── validate-manifests negative test: gemini-cli should error with v0.9.0 msg ─
 # Manifest containing 'gemini-cli' in supported_hosts must error with a clear

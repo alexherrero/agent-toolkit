@@ -42,12 +42,14 @@ try {
         '.claude/skills/memory/scripts/embed.py',
         '.claude/skills/memory/scripts/vec_index.py',
         '.claude/skills/memory/scripts/recall.py',
+        '.claude/skills/memory/scripts/reflect.py',
         '.agent/skills/memory/SKILL.md',
         '.agent/skills/memory/scripts/save.py',
         '.agent/skills/memory/scripts/evolve.py',
         '.agent/skills/memory/scripts/embed.py',
         '.agent/skills/memory/scripts/vec_index.py',
         '.agent/skills/memory/scripts/recall.py',
+        '.agent/skills/memory/scripts/reflect.py',
         # Standalone agent: evaluator. claude-code is single-file;
         # antigravity wraps the agent as a skill. (gemini-cli destination
         # .gemini/agents/evaluator.md removed in v0.9.0.)
@@ -914,6 +916,86 @@ print('RESULTS_COUNT:', len(results))
         }
     } finally {
         Remove-Item -LiteralPath $mbudget -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    # ── Reflection mining module test (plan #7a part 3 task 1) ─────────────
+    Write-Host '==> Reflection mining module test (plan #7a part 3 task 1)'
+    $reflectPy = Join-Path $scratch '.claude/skills/memory/scripts/reflect.py'
+    if (-not (Test-Path -LiteralPath $reflectPy)) {
+        throw "reflect.py not installed at $reflectPy"
+    }
+    $mreflect = Join-Path ([System.IO.Path]::GetTempPath()) ("toolkit-mreflect-" + [System.Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $mreflect -Force | Out-Null
+    try {
+        # Build JSONL transcript via individual ConvertTo-Json lines so PS
+        # doesn't fold/format the JSON across multiple lines.
+        $transcriptPath = Join-Path $mreflect 'transcript.jsonl'
+        $lines = @(
+            '{"type":"queue-operation","content":"intro"}',
+            '{"type":"user","message":{"role":"user","content":"Always use bullet points for status reports, never paragraphs."},"uuid":"u1"}',
+            '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Got it."},{"type":"tool_use","name":"Bash"}]},"uuid":"a1"}',
+            '{"type":"user","message":{"role":"user","content":"No, that''s wrong. You should have added a test plan section."},"uuid":"u2"}',
+            '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash"}]},"uuid":"a2"}',
+            '{"type":"user","message":{"role":"user","content":"The CI bug was caused by line endings. Fixed by switching to write_bytes."},"uuid":"u3"}',
+            '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash"}]},"uuid":"a3"}',
+            '{"type":"user","message":{"role":"user","content":"We should also build a memory inspect command later for tuning recall weights — could be its own follow-up plan."},"uuid":"u4"}',
+            '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Read"}]},"uuid":"a4"}',
+            '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash"}]},"uuid":"a5"}'
+        )
+        # Write LF-only (Set-Content default on Windows is CRLF; use [System.IO.File]::WriteAllText
+        # with an explicit \n joiner so reflect.py reads each line cleanly regardless of platform).
+        [System.IO.File]::WriteAllText($transcriptPath, ($lines -join "`n") + "`n")
+
+        $reflectOut = python3 $reflectPy $transcriptPath '--summary' 2>$null | Out-String
+
+        # Test 1: summary line reports 9 messages processed
+        if ($reflectOut -notmatch '"pass": "summary".*"messages_processed": 9') {
+            throw "summary line missing or wrong messages_processed count. output: $reflectOut"
+        }
+        # Test 2: HIGH preferences from "Always use bullet points"
+        if ($reflectOut -notmatch '"category": "preferences", "confidence": "HIGH".*always.*bullet') {
+            throw "HIGH preferences candidate missing for Always pattern. output: $reflectOut"
+        }
+        # Test 3: correction candidate present
+        if ($reflectOut -notmatch '"rationale": "user correction signal"') {
+            throw "correction-pattern candidate missing. output: $reflectOut"
+        }
+        # Test 4: fix candidate
+        if ($reflectOut -notmatch '"category": "fix".*"rationale": "explicit fix statement"') {
+            throw "fix candidate missing for Fixed by pattern. output: $reflectOut"
+        }
+        # Test 5: idea candidate
+        if ($reflectOut -notmatch '"pass": "idea".*"rationale": "explicit follow-up suggestion"') {
+            throw "idea candidate missing for We should also pattern. output: $reflectOut"
+        }
+        # Test 6: workflow candidate (Bash used 4x)
+        if ($reflectOut -notmatch '"category": "workflow".*"confidence": "MEDIUM".*Bash.*4x') {
+            throw "workflow candidate missing (expected Bash 4x MEDIUM). output: $reflectOut"
+        }
+        # Test 7: --memory-only suppresses idea pass
+        $memOnly = python3 $reflectPy $transcriptPath '--memory-only' 2>$null | Out-String
+        if ($memOnly -match '"pass": "idea"') {
+            throw "--memory-only did not suppress idea pass"
+        }
+        # Test 8: --idea-only suppresses memory pass
+        $ideaOnly = python3 $reflectPy $transcriptPath '--idea-only' 2>$null | Out-String
+        if ($ideaOnly -match '"pass": "memory"') {
+            throw "--idea-only did not suppress memory pass"
+        }
+        # Test 9: missing transcript → exit 1
+        python3 $reflectPy ("/nonexistent/path/" + [Guid]::NewGuid().ToString()) 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 1) {
+            throw "reflect.py on missing transcript exited $LASTEXITCODE (expected 1)"
+        }
+        # Test 10: empty transcript → 0 candidates
+        $emptyPath = Join-Path $mreflect 'empty.jsonl'
+        Set-Content -LiteralPath $emptyPath -Value '' -NoNewline
+        $emptyOut = python3 $reflectPy $emptyPath '--summary' 2>$null | Out-String
+        if ($emptyOut -notmatch '"messages_processed": 0') {
+            throw "empty transcript did not produce 'messages_processed: 0' summary. output: $emptyOut"
+        }
+    } finally {
+        Remove-Item -LiteralPath $mreflect -Recurse -Force -ErrorAction SilentlyContinue
     }
 
     # ── validate-manifests negative test: gemini-cli rejected with v0.9.0 msg ─
