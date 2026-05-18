@@ -55,13 +55,14 @@ try {
         # .gemini/agents/evaluator.md removed in v0.9.0.)
         '.claude/agents/evaluator.md',
         '.agent/skills/evaluator/SKILL.md',
-        # Standalone hooks (claude-code only, v0.7.0); memory-recall-session-start
-        # + memory-recall-prompt-submit added in plan #7a part 2 tasks 1+2 (v0.9.x).
+        # Standalone hooks (claude-code only, v0.7.0); memory-recall hooks
+        # added in plan #7a part 2; memory-reflect-stop added in plan #7a part 3.
         '.claude/hooks/kill-switch.ps1',
         '.claude/hooks/steer.ps1',
         '.claude/hooks/commit-on-stop.ps1',
         '.claude/hooks/memory-recall-session-start.ps1',
         '.claude/hooks/memory-recall-prompt-submit.ps1',
+        '.claude/hooks/memory-reflect-stop.ps1',
         '.claude/settings.json',
         '.git/hooks/pre-push'
     )
@@ -122,7 +123,7 @@ try {
     if ($rerun -match 'created .claude/agents/evaluator') {
         throw 're-run recreated the evaluator agent (should be kept)'
     }
-    if ($rerun -match 'created .claude/hooks/(kill-switch|steer|commit-on-stop|memory-recall-session-start|memory-recall-prompt-submit)') {
+    if ($rerun -match 'created .claude/hooks/(kill-switch|steer|commit-on-stop|memory-recall-session-start|memory-recall-prompt-submit|memory-reflect-stop)') {
         throw 're-run recreated a hook script (should be kept)'
     }
     if ($rerun -match 'merged  .claude/settings.json') {
@@ -996,6 +997,103 @@ print('RESULTS_COUNT:', len(results))
         }
     } finally {
         Remove-Item -LiteralPath $mreflect -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    # ── Stop-event reflection hook test (plan #7a part 3 task 3) ───────────
+    Write-Host '==> Stop-event reflection hook test (plan #7a part 3 task 3)'
+    $reflectStopPs1 = Join-Path $scratch '.claude/hooks/memory-reflect-stop.ps1'
+    if (-not (Test-Path -LiteralPath $reflectStopPs1)) {
+        throw "memory-reflect-stop.ps1 not installed at $reflectStopPs1"
+    }
+    $settingsContent = Get-Content -LiteralPath $settingsJson -Raw
+    if ($settingsContent -notmatch 'memory-reflect-stop\.ps1') {
+        throw "settings.json missing memory-reflect-stop.ps1 Stop entry"
+    }
+    # Seed transcript at ~/.claude/projects/<cwd-slug>/<session-id>.jsonl
+    $mrstop = Join-Path ([System.IO.Path]::GetTempPath()) ("toolkit-mrstop-" + [System.Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $mrstop -Force | Out-Null
+    $rstopCwdSlug = "-" + ($mrstop -replace '[\\/]', '-')
+    $rstopTranscriptDir = Join-Path $HOME ".claude/projects/$rstopCwdSlug"
+    New-Item -ItemType Directory -Path $rstopTranscriptDir -Force | Out-Null
+    $rstopSessionId = "f1e2d3c4-b5a6-7c8d-9e0f-abcdef012345"
+    $rstopTranscript = Join-Path $rstopTranscriptDir "$rstopSessionId.jsonl"
+    $rstopLines = @(
+        '{"type":"user","message":{"role":"user","content":"Always lint before pushing."},"uuid":"u1"}',
+        '{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash"}]},"uuid":"a1"}',
+        '{"type":"user","message":{"role":"user","content":"We should also add a status line later."},"uuid":"u2"}'
+    )
+    [System.IO.File]::WriteAllText($rstopTranscript, ($rstopLines -join "`n") + "`n")
+    try {
+        # Stage memory skill + hook into the scratch project root for the
+        # hook to find them at .claude/skills/memory/scripts/reflect.py and
+        # .claude/hooks/memory-reflect-stop.ps1.
+        New-Item -ItemType Directory -Path (Join-Path $mrstop '.claude/skills/memory/scripts') -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $mrstop '.claude/hooks') -Force | Out-Null
+        Copy-Item -LiteralPath (Join-Path $scratch '.claude/skills/memory/scripts/reflect.py') -Destination (Join-Path $mrstop '.claude/skills/memory/scripts/reflect.py')
+        Copy-Item -LiteralPath $reflectStopPs1 -Destination (Join-Path $mrstop '.claude/hooks/memory-reflect-stop.ps1')
+
+        # Test A: happy-path Stop payload
+        $rstopPayload = '{"session_id":"' + $rstopSessionId + '","cwd":"' + $mrstop.Replace('\','\\') + '","hookEventName":"Stop"}'
+        $stdinFile = Join-Path $mrstop '.stdin.log'
+        $stdoutFile = Join-Path $mrstop '.stdout.log'
+        $stderrFile = Join-Path $mrstop '.stderr.log'
+        Set-Content -LiteralPath $stdinFile -Value $rstopPayload -NoNewline
+        $proc = Start-Process -FilePath 'pwsh' -ArgumentList @('-NoProfile','-File',(Join-Path $mrstop '.claude/hooks/memory-reflect-stop.ps1')) -WorkingDirectory $mrstop -NoNewWindow -Wait -RedirectStandardInput $stdinFile -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile -PassThru
+        if ($proc.ExitCode -ne 0) {
+            $errOut = Get-Content -LiteralPath $stderrFile -Raw
+            throw "Stop hook happy path exited $($proc.ExitCode). stderr: $errOut"
+        }
+        $rstopStderr = Get-Content -LiteralPath $stderrFile -Raw
+        $rstopStdout = Get-Content -LiteralPath $stdoutFile -Raw
+        if ($rstopStderr -notmatch 'Mined [0-9]+ memory candidates \+ [0-9]+ idea candidates') {
+            throw "Stop hook stderr missing transparency line. stderr: $rstopStderr"
+        }
+        if ($rstopStdout -notmatch '"pass": "summary"') {
+            throw "Stop hook stdout missing reflect.py summary record. stdout: $rstopStdout"
+        }
+        if ($rstopStdout -notmatch 'always-lint-before-pushing') {
+            throw "Stop hook stdout missing expected always-lint candidate. stdout: $rstopStdout"
+        }
+        Remove-Item -LiteralPath $stdinFile, $stdoutFile, $stderrFile -ErrorAction SilentlyContinue
+
+        # Test B: empty stdin → graceful skip
+        Set-Content -LiteralPath $stdinFile -Value '' -NoNewline
+        $proc2 = Start-Process -FilePath 'pwsh' -ArgumentList @('-NoProfile','-File',(Join-Path $mrstop '.claude/hooks/memory-reflect-stop.ps1')) -WorkingDirectory $mrstop -NoNewWindow -Wait -RedirectStandardInput $stdinFile -RedirectStandardError $stderrFile -PassThru
+        if ($proc2.ExitCode -ne 0) {
+            throw "Stop hook with empty stdin exited $($proc2.ExitCode); expected 0"
+        }
+        $emptyStderr = Get-Content -LiteralPath $stderrFile -Raw
+        if ($emptyStderr -notmatch 'no stdin payload') {
+            throw "Stop hook with empty stdin did not emit graceful warning. stderr: $emptyStderr"
+        }
+        Remove-Item -LiteralPath $stdinFile, $stderrFile -ErrorAction SilentlyContinue
+
+        # Test C: stdin missing session_id → graceful skip
+        Set-Content -LiteralPath $stdinFile -Value '{"hookEventName":"Stop"}' -NoNewline
+        $proc3 = Start-Process -FilePath 'pwsh' -ArgumentList @('-NoProfile','-File',(Join-Path $mrstop '.claude/hooks/memory-reflect-stop.ps1')) -WorkingDirectory $mrstop -NoNewWindow -Wait -RedirectStandardInput $stdinFile -RedirectStandardError $stderrFile -PassThru
+        if ($proc3.ExitCode -ne 0) {
+            throw "Stop hook with no session_id exited $($proc3.ExitCode); expected 0"
+        }
+        $noSidStderr = Get-Content -LiteralPath $stderrFile -Raw
+        if ($noSidStderr -notmatch 'no session_id') {
+            throw "Stop hook with no session_id did not emit graceful warning. stderr: $noSidStderr"
+        }
+        Remove-Item -LiteralPath $stdinFile, $stderrFile -ErrorAction SilentlyContinue
+
+        # Test D: missing transcript → graceful skip
+        $dPayload = '{"session_id":"deadbeef-cafe-babe-feed-fedcba987654","cwd":"' + $mrstop.Replace('\','\\') + '","hookEventName":"Stop"}'
+        Set-Content -LiteralPath $stdinFile -Value $dPayload -NoNewline
+        $proc4 = Start-Process -FilePath 'pwsh' -ArgumentList @('-NoProfile','-File',(Join-Path $mrstop '.claude/hooks/memory-reflect-stop.ps1')) -WorkingDirectory $mrstop -NoNewWindow -Wait -RedirectStandardInput $stdinFile -RedirectStandardError $stderrFile -PassThru
+        if ($proc4.ExitCode -ne 0) {
+            throw "Stop hook with missing transcript exited $($proc4.ExitCode); expected 0"
+        }
+        $missingStderr = Get-Content -LiteralPath $stderrFile -Raw
+        if ($missingStderr -notmatch 'transcript not found') {
+            throw "Stop hook with missing transcript did not emit warning. stderr: $missingStderr"
+        }
+    } finally {
+        Remove-Item -LiteralPath $mrstop -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $rstopTranscriptDir -Recurse -Force -ErrorAction SilentlyContinue
     }
 
     # ── validate-manifests negative test: gemini-cli rejected with v0.9.0 msg ─

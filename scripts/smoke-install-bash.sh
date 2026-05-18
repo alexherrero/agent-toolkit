@@ -60,13 +60,14 @@ expected=(
   # .gemini/agents/evaluator.md removed in v0.9.0.)
   .claude/agents/evaluator.md
   .agent/skills/evaluator/SKILL.md
-  # Standalone hooks — claude-code only (v0.7.0); memory-recall-session-start
-  # + memory-recall-prompt-submit added in plan #7a part 2 tasks 1+2 (v0.9.x).
+  # Standalone hooks — claude-code only (v0.7.0); memory-recall hooks
+  # added in plan #7a part 2; memory-reflect-stop added in plan #7a part 3.
   .claude/hooks/kill-switch.sh
   .claude/hooks/steer.sh
   .claude/hooks/commit-on-stop.sh
   .claude/hooks/memory-recall-session-start.sh
   .claude/hooks/memory-recall-prompt-submit.sh
+  .claude/hooks/memory-reflect-stop.sh
   .claude/settings.json
   # Pre-push hook
   .git/hooks/pre-push
@@ -152,7 +153,7 @@ if grep -qE "created .claude/agents/evaluator" "$SCRATCH/.rerun.log"; then
   exit 1
 fi
 # Same for hooks: re-run should not "create" scripts that already exist.
-if grep -qE "created .claude/hooks/(kill-switch|steer|commit-on-stop|memory-recall-session-start|memory-recall-prompt-submit)" "$SCRATCH/.rerun.log"; then
+if grep -qE "created .claude/hooks/(kill-switch|steer|commit-on-stop|memory-recall-session-start|memory-recall-prompt-submit|memory-reflect-stop)" "$SCRATCH/.rerun.log"; then
   echo "FAIL: re-run recreated a hook script that already existed (should be 'kept')" >&2
   exit 1
 fi
@@ -1237,6 +1238,108 @@ if ! echo "$EMPTY_OUT" | grep -qE '"messages_processed": 0'; then
   exit 1
 fi
 rm -rf "$MREFLECT"
+
+# ── Stop-event reflection hook test (plan #7a part 3 task 3) ───────────────
+# Verify the memory-reflect-stop hook lands + executes end-to-end against a
+# mocked Stop payload + fixture transcript. The hook should: (1) parse
+# session_id + cwd from stdin JSON; (2) compute transcript path; (3) invoke
+# reflect.py --summary; (4) emit transparency line on stderr; (5) re-emit
+# reflect.py output on stdout; (6) exit 0 even on missing transcript / bad
+# stdin (never-block-session-end contract).
+echo "==> Stop-event reflection hook test (plan #7a part 3 task 3)"
+REFLECT_STOP_SH="$SCRATCH/.claude/hooks/memory-reflect-stop.sh"
+if [[ ! -x "$REFLECT_STOP_SH" ]]; then
+  echo "FAIL: memory-reflect-stop.sh not installed/executable at $REFLECT_STOP_SH" >&2
+  exit 1
+fi
+# settings.json must contain the Stop entry referencing memory-reflect-stop.sh
+if ! grep -qE 'memory-reflect-stop\.sh' "$SETTINGS_JSON"; then
+  echo "FAIL: settings.json missing memory-reflect-stop.sh Stop entry" >&2
+  exit 1
+fi
+# Seed a fixture transcript at the expected ~/.claude/projects/<cwd-slug>/<session-id>.jsonl path
+MRSTOP="$(mktemp -d)"
+RSTOP_CWD_SLUG="-$(echo "$MRSTOP" | tr '/' '-')"
+RSTOP_TRANSCRIPT_DIR="$HOME/.claude/projects/$RSTOP_CWD_SLUG"
+RSTOP_SESSION_ID="a1b2c3d4-e5f6-7a8b-9c0d-aabbccddeeff"
+mkdir -p "$RSTOP_TRANSCRIPT_DIR"
+RSTOP_TRANSCRIPT="$RSTOP_TRANSCRIPT_DIR/$RSTOP_SESSION_ID.jsonl"
+cat > "$RSTOP_TRANSCRIPT" << 'RS_EOF'
+{"type":"user","message":{"role":"user","content":"Always lint before pushing."},"uuid":"u1"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash"}]},"uuid":"a1"}
+{"type":"user","message":{"role":"user","content":"We should also add a status line later."},"uuid":"u2"}
+RS_EOF
+
+# Test A: happy path — valid Stop payload + valid transcript → transparency line + reflect output
+RSTOP_PAYLOAD='{"session_id":"'$RSTOP_SESSION_ID'","cwd":"'$MRSTOP'","hookEventName":"Stop"}'
+RSTOP_STDOUT="$(cd "$MRSTOP" && mkdir -p .claude/skills/memory/scripts .claude/hooks && cp "$SCRATCH/.claude/skills/memory/scripts/reflect.py" .claude/skills/memory/scripts/ && cp "$REFLECT_STOP_SH" .claude/hooks/ && chmod +x .claude/hooks/memory-reflect-stop.sh && echo "$RSTOP_PAYLOAD" | bash .claude/hooks/memory-reflect-stop.sh 2>/tmp/rstop-stderr.log)"
+RSTOP_STDERR="$(cat /tmp/rstop-stderr.log)"
+rm -f /tmp/rstop-stderr.log
+if ! echo "$RSTOP_STDERR" | grep -qE "Mined [0-9]+ memory candidates \+ [0-9]+ idea candidates"; then
+  echo "FAIL: Stop hook stderr missing transparency line" >&2
+  echo "    stderr: $RSTOP_STDERR" >&2
+  rm -rf "$MRSTOP" "$RSTOP_TRANSCRIPT_DIR"
+  exit 1
+fi
+if ! echo "$RSTOP_STDOUT" | grep -qE '"pass": "summary"'; then
+  echo "FAIL: Stop hook stdout missing reflect.py summary record" >&2
+  echo "    stdout: $RSTOP_STDOUT" >&2
+  rm -rf "$MRSTOP" "$RSTOP_TRANSCRIPT_DIR"
+  exit 1
+fi
+if ! echo "$RSTOP_STDOUT" | grep -qE "always-lint-before-pushing"; then
+  echo "FAIL: Stop hook stdout missing expected always-lint candidate slug" >&2
+  echo "    stdout: $RSTOP_STDOUT" >&2
+  rm -rf "$MRSTOP" "$RSTOP_TRANSCRIPT_DIR"
+  exit 1
+fi
+
+# Test B: missing stdin → graceful skip
+B_STDERR="$(cd "$MRSTOP" && echo -n "" | bash .claude/hooks/memory-reflect-stop.sh 2>&1)"
+B_EXIT=$?
+if [[ $B_EXIT -ne 0 ]]; then
+  echo "FAIL: Stop hook with empty stdin exited $B_EXIT (expected 0)" >&2
+  rm -rf "$MRSTOP" "$RSTOP_TRANSCRIPT_DIR"
+  exit 1
+fi
+if ! echo "$B_STDERR" | grep -qE "no stdin payload"; then
+  echo "FAIL: Stop hook with empty stdin did not emit 'no stdin payload' warning" >&2
+  echo "    stderr: $B_STDERR" >&2
+  rm -rf "$MRSTOP" "$RSTOP_TRANSCRIPT_DIR"
+  exit 1
+fi
+
+# Test C: stdin missing session_id → graceful skip
+C_STDERR="$(cd "$MRSTOP" && echo '{"hookEventName":"Stop"}' | bash .claude/hooks/memory-reflect-stop.sh 2>&1)"
+C_EXIT=$?
+if [[ $C_EXIT -ne 0 ]]; then
+  echo "FAIL: Stop hook with no session_id exited $C_EXIT (expected 0)" >&2
+  rm -rf "$MRSTOP" "$RSTOP_TRANSCRIPT_DIR"
+  exit 1
+fi
+if ! echo "$C_STDERR" | grep -qE "no session_id"; then
+  echo "FAIL: Stop hook with no session_id did not emit graceful warning" >&2
+  rm -rf "$MRSTOP" "$RSTOP_TRANSCRIPT_DIR"
+  exit 1
+fi
+
+# Test D: transcript doesn't exist → graceful skip
+D_PAYLOAD='{"session_id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeffff","cwd":"'$MRSTOP'","hookEventName":"Stop"}'
+D_STDERR="$(cd "$MRSTOP" && echo "$D_PAYLOAD" | bash .claude/hooks/memory-reflect-stop.sh 2>&1)"
+D_EXIT=$?
+if [[ $D_EXIT -ne 0 ]]; then
+  echo "FAIL: Stop hook with missing transcript exited $D_EXIT (expected 0)" >&2
+  rm -rf "$MRSTOP" "$RSTOP_TRANSCRIPT_DIR"
+  exit 1
+fi
+if ! echo "$D_STDERR" | grep -qE "transcript not found"; then
+  echo "FAIL: Stop hook with missing transcript did not emit 'transcript not found' warning" >&2
+  rm -rf "$MRSTOP" "$RSTOP_TRANSCRIPT_DIR"
+  exit 1
+fi
+
+# Cleanup
+rm -rf "$MRSTOP" "$RSTOP_TRANSCRIPT_DIR"
 
 # ── validate-manifests negative test: gemini-cli should error with v0.9.0 msg ─
 # Manifest containing 'gemini-cli' in supported_hosts must error with a clear
