@@ -49,6 +49,7 @@ expected=(
   .claude/skills/memory/scripts/recall.py
   .claude/skills/memory/scripts/reflect.py
   .claude/skills/memory/scripts/permeable_boundary.py
+  .claude/skills/memory/scripts/ideas_surface.py
   .agent/skills/memory/SKILL.md
   .agent/skills/memory/scripts/save.py
   .agent/skills/memory/scripts/evolve.py
@@ -57,6 +58,7 @@ expected=(
   .agent/skills/memory/scripts/recall.py
   .agent/skills/memory/scripts/reflect.py
   .agent/skills/memory/scripts/permeable_boundary.py
+  .agent/skills/memory/scripts/ideas_surface.py
   # Standalone agent: evaluator — claude-code is single-file destination;
   # antigravity wraps the agent as a skill. (gemini-cli destination
   # .gemini/agents/evaluator.md removed in v0.9.0.)
@@ -1708,6 +1710,102 @@ if [[ "$PB_F_OUT" != "OK" ]]; then
   echo "FAIL: Python API TTY answer mapping broken: $PB_F_OUT" >&2
   exit 1
 fi
+
+# ── Ideas.md surface-tier writer test (plan #7a part 4 task 2) ─────────────
+# Verify ideas_surface.py appends idea sections to Ideas.md correctly:
+#   - silent mode + first write creates header + section
+#   - second write appends section without touching header
+#   - sections use locked format (## YYYY-MM-DD: Title + summary + wikilink)
+#   - auto mode → denied (A3 boundary)
+#   - empty summary → error exit 1
+#   - IDEAS_SURFACE_PATH env override redirects target
+echo "==> Ideas.md surface-tier writer test (plan #7a part 4 task 2)"
+IS_PY="$SCRATCH/.claude/skills/memory/scripts/ideas_surface.py"
+if [[ ! -f "$IS_PY" ]]; then
+  echo "FAIL: ideas_surface.py not installed at $IS_PY" >&2
+  exit 1
+fi
+MISURFACE="$(mktemp -d)"
+IDEAS_MD="$MISURFACE/Ideas.md"
+# Test A: silent + first write creates header + section
+IS_A_OUT="$(python3 "$IS_PY" \
+  'Add /memory inspect command' \
+  'Operators need to audit why a candidate was mined. Build /memory inspect.' \
+  --ideas-path "$IDEAS_MD" --mode silent 2>&1)"
+if ! echo "$IS_A_OUT" | grep -qE '"appended": true'; then
+  echo "FAIL: silent first-write did not emit appended:true. output: $IS_A_OUT" >&2
+  rm -rf "$MISURFACE"
+  exit 1
+fi
+if ! grep -qE "^# Ideas$" "$IDEAS_MD"; then
+  echo "FAIL: Ideas.md missing first-write header" >&2
+  cat "$IDEAS_MD" >&2
+  rm -rf "$MISURFACE"
+  exit 1
+fi
+if ! grep -qE "^## [0-9]{4}-[0-9]{2}-[0-9]{2}: Add /memory inspect command$" "$IDEAS_MD"; then
+  echo "FAIL: section header missing or wrong format" >&2
+  cat "$IDEAS_MD" >&2
+  rm -rf "$MISURFACE"
+  exit 1
+fi
+if ! grep -qE 'See deep research: \[\[MemoryVault/personal-private/_idea-incubator/add-memory-inspect-command/_index.md\]\]' "$IDEAS_MD"; then
+  echo "FAIL: section missing wikilink (or wrong slug)" >&2
+  cat "$IDEAS_MD" >&2
+  rm -rf "$MISURFACE"
+  exit 1
+fi
+# Test B: second write appends + preserves header + uses custom slug
+ORIG_HEADER="$(head -5 "$IDEAS_MD")"
+python3 "$IS_PY" 'Idle hook native event' 'Lobby Claude Code team for real idle-event hook.' \
+  --slug claude-code-idle-event --ideas-path "$IDEAS_MD" --mode silent >/dev/null 2>&1
+NEW_HEADER="$(head -5 "$IDEAS_MD")"
+if [[ "$ORIG_HEADER" != "$NEW_HEADER" ]]; then
+  echo "FAIL: second-write modified the first 5 lines (header should be preserved)" >&2
+  rm -rf "$MISURFACE"
+  exit 1
+fi
+SECTION_COUNT="$(grep -cE '^## [0-9]{4}-[0-9]{2}-[0-9]{2}:' "$IDEAS_MD" || echo 0)"
+if [[ "$SECTION_COUNT" != "2" ]]; then
+  echo "FAIL: expected 2 sections after second write, got $SECTION_COUNT" >&2
+  rm -rf "$MISURFACE"
+  exit 1
+fi
+if ! grep -qE '\[\[MemoryVault/personal-private/_idea-incubator/claude-code-idle-event/_index.md\]\]' "$IDEAS_MD"; then
+  echo "FAIL: second section missing custom-slug wikilink" >&2
+  rm -rf "$MISURFACE"
+  exit 1
+fi
+# Test C: auto mode → denied (A3 boundary)
+IS_C=0
+python3 "$IS_PY" 'Should not appear' 'Anything' --ideas-path "$IDEAS_MD" --mode auto >/dev/null 2>&1 || IS_C=$?
+if [[ $IS_C -ne 2 ]]; then
+  echo "FAIL: auto mode exited $IS_C (expected 2 — permeable_boundary denied)" >&2
+  rm -rf "$MISURFACE"
+  exit 1
+fi
+if grep -qE 'Should not appear' "$IDEAS_MD"; then
+  echo "FAIL: auto-denied content leaked into Ideas.md" >&2
+  rm -rf "$MISURFACE"
+  exit 1
+fi
+# Test D: empty summary → error exit 1
+IS_D=0
+python3 "$IS_PY" 'Title' '   ' --ideas-path "$IDEAS_MD" --mode silent >/dev/null 2>&1 || IS_D=$?
+if [[ $IS_D -ne 1 ]]; then
+  echo "FAIL: empty summary exited $IS_D (expected 1)" >&2
+  rm -rf "$MISURFACE"
+  exit 1
+fi
+# Test E: IDEAS_SURFACE_PATH env override
+ENV_IDEAS="$MISURFACE/env-Ideas.md"
+IDEAS_SURFACE_PATH="$ENV_IDEAS" python3 "$IS_PY" 'Env override test' 'Test summary.' --mode silent >/dev/null 2>&1
+if [[ ! -f "$ENV_IDEAS" ]]; then
+  echo "FAIL: IDEAS_SURFACE_PATH env override did not redirect Ideas.md" >&2
+  rm -rf "$MISURFACE"
+  exit 1
+fi
+rm -rf "$MISURFACE"
 
 # ── validate-manifests negative test: gemini-cli should error with v0.9.0 msg ─
 # Manifest containing 'gemini-cli' in supported_hosts must error with a clear

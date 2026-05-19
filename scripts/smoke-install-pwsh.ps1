@@ -44,6 +44,7 @@ try {
         '.claude/skills/memory/scripts/recall.py',
         '.claude/skills/memory/scripts/reflect.py',
         '.claude/skills/memory/scripts/permeable_boundary.py',
+        '.claude/skills/memory/scripts/ideas_surface.py',
         '.agent/skills/memory/SKILL.md',
         '.agent/skills/memory/scripts/save.py',
         '.agent/skills/memory/scripts/evolve.py',
@@ -52,6 +53,7 @@ try {
         '.agent/skills/memory/scripts/recall.py',
         '.agent/skills/memory/scripts/reflect.py',
         '.agent/skills/memory/scripts/permeable_boundary.py',
+        '.agent/skills/memory/scripts/ideas_surface.py',
         # Standalone agent: evaluator. claude-code is single-file;
         # antigravity wraps the agent as a skill. (gemini-cli destination
         # .gemini/agents/evaluator.md removed in v0.9.0.)
@@ -1391,6 +1393,75 @@ print('OK')
     $pbFOut = (python3 -c $pbFDriver 2>&1 | Out-String).Trim()
     if ($pbFOut -ne 'OK') {
         throw "Python API TTY answer mapping broken: $pbFOut"
+    }
+
+    # ── Ideas.md surface-tier writer test (plan #7a part 4 task 2) ─────────
+    Write-Host '==> Ideas.md surface-tier writer test (plan #7a part 4 task 2)'
+    $isPy = Join-Path $scratch '.claude/skills/memory/scripts/ideas_surface.py'
+    if (-not (Test-Path -LiteralPath $isPy)) {
+        throw "ideas_surface.py not installed at $isPy"
+    }
+    $misurface = Join-Path ([System.IO.Path]::GetTempPath()) ("toolkit-misurface-" + [System.Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $misurface -Force | Out-Null
+    $ideasMd = Join-Path $misurface 'Ideas.md'
+    try {
+        # Test A: silent + first write creates header + section
+        $isAOut = python3 $isPy 'Add /memory inspect command' 'Operators need to audit why a candidate was mined. Build /memory inspect.' '--ideas-path' $ideasMd '--mode' 'silent' 2>&1 | Out-String
+        if ($isAOut -notmatch '"appended": true') {
+            throw "silent first-write did not emit appended:true. output: $isAOut"
+        }
+        $ideasContent = Get-Content -LiteralPath $ideasMd -Raw
+        if ($ideasContent -notmatch '(?m)^# Ideas$') {
+            throw "Ideas.md missing first-write header"
+        }
+        if ($ideasContent -notmatch '(?m)^## \d{4}-\d{2}-\d{2}: Add /memory inspect command$') {
+            throw "section header missing or wrong format"
+        }
+        if ($ideasContent -notmatch '\[\[MemoryVault/personal-private/_idea-incubator/add-memory-inspect-command/_index\.md\]\]') {
+            throw "section missing wikilink (or wrong slug)"
+        }
+        # Test B: second write appends + preserves header + custom slug
+        $origHeader = (Get-Content -LiteralPath $ideasMd -TotalCount 5) -join "`n"
+        python3 $isPy 'Idle hook native event' 'Lobby Claude Code team for real idle-event hook.' '--slug' 'claude-code-idle-event' '--ideas-path' $ideasMd '--mode' 'silent' 2>$null | Out-Null
+        $newHeader = (Get-Content -LiteralPath $ideasMd -TotalCount 5) -join "`n"
+        if ($origHeader -ne $newHeader) {
+            throw "second-write modified the first 5 lines (header should be preserved)"
+        }
+        $ideasContent = Get-Content -LiteralPath $ideasMd -Raw
+        $sectionCount = ([regex]::Matches($ideasContent, '(?m)^## \d{4}-\d{2}-\d{2}:')).Count
+        if ($sectionCount -ne 2) {
+            throw "expected 2 sections after second write, got $sectionCount"
+        }
+        if ($ideasContent -notmatch '\[\[MemoryVault/personal-private/_idea-incubator/claude-code-idle-event/_index\.md\]\]') {
+            throw "second section missing custom-slug wikilink"
+        }
+        # Test C: auto mode → denied
+        python3 $isPy 'Should not appear' 'Anything' '--ideas-path' $ideasMd '--mode' 'auto' 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 2) {
+            throw "auto mode exited $LASTEXITCODE (expected 2 — permeable_boundary denied)"
+        }
+        $ideasContent = Get-Content -LiteralPath $ideasMd -Raw
+        if ($ideasContent -match 'Should not appear') {
+            throw "auto-denied content leaked into Ideas.md"
+        }
+        # Test D: empty summary → exit 1
+        python3 $isPy 'Title' '   ' '--ideas-path' $ideasMd '--mode' 'silent' 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 1) {
+            throw "empty summary exited $LASTEXITCODE (expected 1)"
+        }
+        # Test E: IDEAS_SURFACE_PATH env override
+        $envIdeas = Join-Path $misurface 'env-Ideas.md'
+        $env:IDEAS_SURFACE_PATH = $envIdeas
+        try {
+            python3 $isPy 'Env override test' 'Test summary.' '--mode' 'silent' 2>$null | Out-Null
+            if (-not (Test-Path -LiteralPath $envIdeas)) {
+                throw "IDEAS_SURFACE_PATH env override did not redirect Ideas.md"
+            }
+        } finally {
+            Remove-Item -Path Env:IDEAS_SURFACE_PATH -ErrorAction SilentlyContinue
+        }
+    } finally {
+        Remove-Item -LiteralPath $misurface -Recurse -Force -ErrorAction SilentlyContinue
     }
 
     # ── validate-manifests negative test: gemini-cli rejected with v0.9.0 msg ─
