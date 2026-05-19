@@ -48,6 +48,7 @@ expected=(
   .claude/skills/memory/scripts/vec_index.py
   .claude/skills/memory/scripts/recall.py
   .claude/skills/memory/scripts/reflect.py
+  .claude/skills/memory/scripts/permeable_boundary.py
   .agent/skills/memory/SKILL.md
   .agent/skills/memory/scripts/save.py
   .agent/skills/memory/scripts/evolve.py
@@ -55,6 +56,7 @@ expected=(
   .agent/skills/memory/scripts/vec_index.py
   .agent/skills/memory/scripts/recall.py
   .agent/skills/memory/scripts/reflect.py
+  .agent/skills/memory/scripts/permeable_boundary.py
   # Standalone agent: evaluator — claude-code is single-file destination;
   # antigravity wraps the agent as a skill. (gemini-cli destination
   # .gemini/agents/evaluator.md removed in v0.9.0.)
@@ -1614,6 +1616,98 @@ if [[ $NO_MARKER_EXIT -ne 0 ]]; then
 fi
 
 rm -rf "$MMARKER" "$MMARKER_VAULT" "$MMARKER_TRANSCRIPT_DIR"
+
+# ── Permeable boundary helper test (plan #7a part 4 task 1) ────────────────
+# Verify the A3 permeable-write-boundary helper:
+#   - silent mode → auto-approve (exit 0, approved=true)
+#   - auto mode → deny (exit 1, approved=false) — never silently writes
+#     outside MemoryVault from non-TTY hook contexts
+#   - interactive mode with non-TTY stdin → fall back to deny (exit 1)
+#   - invalid mode → argparse error (exit 2)
+#   - env var MEMORY_REVIEW_MODE=silent override → auto-approve
+echo "==> Permeable boundary helper test (plan #7a part 4 task 1)"
+PB_PY="$SCRATCH/.claude/skills/memory/scripts/permeable_boundary.py"
+if [[ ! -f "$PB_PY" ]]; then
+  echo "FAIL: permeable_boundary.py not installed at $PB_PY" >&2
+  exit 1
+fi
+# Test A: silent mode → approved
+PB_A=0
+PB_A_OUT="$(python3 "$PB_PY" /tmp/test-write.md --content-preview "hello" --rationale "test" --mode silent 2>&1)" || PB_A=$?
+if [[ $PB_A -ne 0 ]]; then
+  echo "FAIL: silent mode exited $PB_A (expected 0)" >&2
+  echo "    output: $PB_A_OUT" >&2
+  exit 1
+fi
+if ! echo "$PB_A_OUT" | grep -qE '"approved": true'; then
+  echo "FAIL: silent mode did not emit approved:true" >&2
+  echo "    output: $PB_A_OUT" >&2
+  exit 1
+fi
+# Test B: auto mode → denied (exit 1)
+PB_B=0
+PB_B_OUT="$(python3 "$PB_PY" /tmp/test-write.md --content-preview "hello" --rationale "test" --mode auto 2>&1)" || PB_B=$?
+if [[ $PB_B -ne 1 ]]; then
+  echo "FAIL: auto mode exited $PB_B (expected 1 — A3 says never silently write outside MemoryVault)" >&2
+  echo "    output: $PB_B_OUT" >&2
+  exit 1
+fi
+if ! echo "$PB_B_OUT" | grep -qE '"approved": false'; then
+  echo "FAIL: auto mode did not emit approved:false" >&2
+  echo "    output: $PB_B_OUT" >&2
+  exit 1
+fi
+# Test C: interactive mode with non-TTY (piped stdin) → fall back to deny
+PB_C=0
+PB_C_OUT="$(echo "y" | python3 "$PB_PY" /tmp/test-write.md --content-preview "hello" --rationale "test" --mode interactive 2>&1)" || PB_C=$?
+if [[ $PB_C -ne 1 ]]; then
+  echo "FAIL: interactive mode with non-TTY exited $PB_C (expected 1 — never silently approve from piped stdin)" >&2
+  echo "    output: $PB_C_OUT" >&2
+  exit 1
+fi
+if ! echo "$PB_C_OUT" | grep -qE '"approved": false'; then
+  echo "FAIL: interactive non-TTY did not emit approved:false" >&2
+  exit 1
+fi
+# Test D: invalid mode → argparse exit 2
+PB_D=0
+python3 "$PB_PY" /tmp/test-write.md --mode bogus 2>/dev/null || PB_D=$?
+if [[ $PB_D -ne 2 ]]; then
+  echo "FAIL: invalid mode exited $PB_D (expected 2 from argparse)" >&2
+  exit 1
+fi
+# Test E: MEMORY_REVIEW_MODE=silent env var → auto-approve
+PB_E=0
+PB_E_OUT="$(MEMORY_REVIEW_MODE=silent python3 "$PB_PY" /tmp/test-write.md --content-preview "x" --rationale "y" 2>&1)" || PB_E=$?
+if [[ $PB_E -ne 0 ]]; then
+  echo "FAIL: env MEMORY_REVIEW_MODE=silent did not auto-approve (exit $PB_E)" >&2
+  echo "    output: $PB_E_OUT" >&2
+  exit 1
+fi
+if ! echo "$PB_E_OUT" | grep -qE '"approved": true'; then
+  echo "FAIL: env silent did not emit approved:true" >&2
+  exit 1
+fi
+# Test F: Python API with mocked TTY stdin → approved on 'y', denied on 'n'
+PB_F_OUT="$(python3 -c '
+import io, sys
+sys.path.insert(0, r"'$SCRATCH/.claude/skills/memory/scripts'")
+from permeable_boundary import confirm_write_outside_memoryvault
+class FakeStdin(io.StringIO):
+    def isatty(self): return True
+for ans, expect in [("y\n", True), ("n\n", False), ("\n", False), ("yes\n", True)]:
+    fake_in = FakeStdin(ans)
+    fake_out = io.StringIO()
+    got = confirm_write_outside_memoryvault("/tmp/t.md", "p", "r", stdin=fake_in, stdout=fake_out, mode="interactive")
+    if got != expect:
+        print(f"FAIL: answer={ans!r} expected {expect} got {got}")
+        sys.exit(1)
+print("OK")
+' 2>&1)"
+if [[ "$PB_F_OUT" != "OK" ]]; then
+  echo "FAIL: Python API TTY answer mapping broken: $PB_F_OUT" >&2
+  exit 1
+fi
 
 # ── validate-manifests negative test: gemini-cli should error with v0.9.0 msg ─
 # Manifest containing 'gemini-cli' in supported_hosts must error with a clear

@@ -43,6 +43,7 @@ try {
         '.claude/skills/memory/scripts/vec_index.py',
         '.claude/skills/memory/scripts/recall.py',
         '.claude/skills/memory/scripts/reflect.py',
+        '.claude/skills/memory/scripts/permeable_boundary.py',
         '.agent/skills/memory/SKILL.md',
         '.agent/skills/memory/scripts/save.py',
         '.agent/skills/memory/scripts/evolve.py',
@@ -50,6 +51,7 @@ try {
         '.agent/skills/memory/scripts/vec_index.py',
         '.agent/skills/memory/scripts/recall.py',
         '.agent/skills/memory/scripts/reflect.py',
+        '.agent/skills/memory/scripts/permeable_boundary.py',
         # Standalone agent: evaluator. claude-code is single-file;
         # antigravity wraps the agent as a skill. (gemini-cli destination
         # .gemini/agents/evaluator.md removed in v0.9.0.)
@@ -1319,6 +1321,76 @@ transcript: $($mridle.Replace('\','/'))/does-not-exist.jsonl
         Remove-Item -LiteralPath $mmarkerVault -Recurse -Force -ErrorAction SilentlyContinue
         Remove-Item -LiteralPath $mmarkerTranscriptDir -Recurse -Force -ErrorAction SilentlyContinue
         Remove-Item -Path Env:MEMORY_VAULT_PATH -ErrorAction SilentlyContinue
+    }
+
+    # ── Permeable boundary helper test (plan #7a part 4 task 1) ────────────
+    Write-Host '==> Permeable boundary helper test (plan #7a part 4 task 1)'
+    $pbPy = Join-Path $scratch '.claude/skills/memory/scripts/permeable_boundary.py'
+    if (-not (Test-Path -LiteralPath $pbPy)) {
+        throw "permeable_boundary.py not installed at $pbPy"
+    }
+    # Test A: silent mode → approved (exit 0)
+    $pbAOut = python3 $pbPy '/tmp/test-write.md' '--content-preview' 'hello' '--rationale' 'test' '--mode' 'silent' 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 0) {
+        throw "silent mode exited $LASTEXITCODE (expected 0). output: $pbAOut"
+    }
+    if ($pbAOut -notmatch '"approved": true') {
+        throw "silent mode did not emit approved:true. output: $pbAOut"
+    }
+    # Test B: auto mode → denied (exit 1)
+    $pbBOut = python3 $pbPy '/tmp/test-write.md' '--content-preview' 'hello' '--rationale' 'test' '--mode' 'auto' 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 1) {
+        throw "auto mode exited $LASTEXITCODE (expected 1 — A3 says never silently write outside MemoryVault). output: $pbBOut"
+    }
+    if ($pbBOut -notmatch '"approved": false') {
+        throw "auto mode did not emit approved:false"
+    }
+    # Test C: interactive with piped stdin → deny (exit 1)
+    $pbCOut = 'y' | python3 $pbPy '/tmp/test-write.md' '--content-preview' 'hello' '--rationale' 'test' '--mode' 'interactive' 2>&1 | Out-String
+    if ($LASTEXITCODE -ne 1) {
+        throw "interactive non-TTY exited $LASTEXITCODE (expected 1). output: $pbCOut"
+    }
+    if ($pbCOut -notmatch '"approved": false') {
+        throw "interactive non-TTY did not emit approved:false"
+    }
+    # Test D: invalid mode → argparse exit 2
+    python3 $pbPy '/tmp/test-write.md' '--mode' 'bogus' 2>$null | Out-Null
+    if ($LASTEXITCODE -ne 2) {
+        throw "invalid mode exited $LASTEXITCODE (expected 2 from argparse)"
+    }
+    # Test E: env MEMORY_REVIEW_MODE=silent → auto-approve
+    $env:MEMORY_REVIEW_MODE = 'silent'
+    try {
+        $pbEOut = python3 $pbPy '/tmp/test-write.md' '--content-preview' 'x' '--rationale' 'y' 2>&1 | Out-String
+        if ($LASTEXITCODE -ne 0) {
+            throw "env MEMORY_REVIEW_MODE=silent did not auto-approve (exit $LASTEXITCODE)"
+        }
+        if ($pbEOut -notmatch '"approved": true') {
+            throw "env silent did not emit approved:true"
+        }
+    } finally {
+        Remove-Item -Path Env:MEMORY_REVIEW_MODE -ErrorAction SilentlyContinue
+    }
+    # Test F: Python API with mocked TTY stdin → approved on 'y', denied on 'n'
+    $pbScriptsRel = (Join-Path $scratch '.claude/skills/memory/scripts').Replace('\','/')
+    $pbFDriver = @"
+import io, sys
+sys.path.insert(0, r'$pbScriptsRel')
+from permeable_boundary import confirm_write_outside_memoryvault
+class FakeStdin(io.StringIO):
+    def isatty(self): return True
+for ans, expect in [('y\n', True), ('n\n', False), ('\n', False), ('yes\n', True)]:
+    fake_in = FakeStdin(ans)
+    fake_out = io.StringIO()
+    got = confirm_write_outside_memoryvault('/tmp/t.md', 'p', 'r', stdin=fake_in, stdout=fake_out, mode='interactive')
+    if got != expect:
+        print(f'FAIL: answer={ans!r} expected {expect} got {got}')
+        sys.exit(1)
+print('OK')
+"@
+    $pbFOut = (python3 -c $pbFDriver 2>&1 | Out-String).Trim()
+    if ($pbFOut -ne 'OK') {
+        throw "Python API TTY answer mapping broken: $pbFOut"
     }
 
     # ── validate-manifests negative test: gemini-cli rejected with v0.9.0 msg ─
