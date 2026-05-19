@@ -4,7 +4,7 @@
 > **Goal:** capture durable preferences / workflows / fixes to MemoryVault so the agent's behavior compounds across sessions. Evolve entries when preferences change without losing the audit trail.
 > **Prereqs:** `agent-toolkit` installed (skill lands at `.claude/skills/memory/` + `.agent/skills/memory/`); an Obsidian vault folder set up as your `MemoryVault/` root + the path exported as `MEMORY_VAULT_PATH` (or passed via `--vault-path` on each invocation). Optional: `pip install sqlite-vec sentence-transformers` for full vec-index + offline embedding; `VOYAGE_API_KEY` or `ANTHROPIC_API_KEY` env var for online embedding. Without these the skill still works (file writes always succeed; embedding work queues for later).
 
-The `memory` skill ships as plan #7a parts 1 + 2 of [MemoryVault — Permanent agent memory via Obsidian-vault-folder + reflection sidecar](../explanation/designs/memoryvault.md). This page covers the **two write primitives** (`/memory save` + `/memory evolve`) **and the two recall hooks** (SessionStart + UserPromptSubmit, auto-installed alongside the skill) — reflection sidecar (Stop + idle hooks), idea ledger, and discovery come in subsequent parts.
+The `memory` skill ships as plan #7a parts 1 + 2 + 3 of [MemoryVault — Permanent agent memory via Obsidian-vault-folder + reflection sidecar](../explanation/designs/memoryvault.md). This page covers the **two write primitives** (`/memory save` + `/memory evolve`), the **two recall hooks** (SessionStart + UserPromptSubmit), the **`/memory reflect` skill + Stop / idle reflection hooks** (the write loop), and **crash-recovery markers**. Idea ledger + discovery come in subsequent parts.
 
 ## ⚡ At-a-glance
 
@@ -14,8 +14,9 @@ The `memory` skill ships as plan #7a parts 1 + 2 of [MemoryVault — Permanent a
 | `/memory evolve` | `<old-path> <reason>` + new body | Archive at `_archive/<original>.YYYYMMDD.md` + new entry replacing old | `skills/memory/scripts/evolve.py` |
 | **(recall, auto)** | — (fires on session boot + every prompt) | Always-load entries injected into session; top-K relevant entries injected per prompt | `skills/memory/scripts/recall.py` + 2 Claude Code hooks |
 | `python3 recall.py query "<text>"` | — | Top-K matches as one JSON record per line | `skills/memory/scripts/recall.py` |
-| `/memory reflect` | — | (stub; lands in plan #7a part 3) | — |
-| `/memory search` | — | (stub; thin wrap of `recall.py query` lands with reflection sidecar) | — |
+| `/memory reflect` | `[--session <path>] [--memory-only \| --idea-only]` | Mined candidate JSON records on stdout (one per line); routing summary on stderr; HIGH→canonical save, MEDIUM→see `--route-mode`, LOW→`_inbox/` | `skills/memory/scripts/reflect.py` |
+| **(reflect, auto)** | — (fires on Stop + on every SessionStart for idle scan) | Mines + routes candidates per the tri-modal heuristic; renames `.start` → `.reflected` markers on success | `skills/memory/scripts/reflect.py` + 2 Claude Code hooks |
+| `/memory search` | — | (stub; thin wrap of `recall.py query` lands in plan #7a part 4) | — |
 
 ## When to use which sub-command
 
@@ -27,7 +28,8 @@ The `memory` skill ships as plan #7a parts 1 + 2 of [MemoryVault — Permanent a
 | Rename an entry's slug while evolving content | `/memory evolve --new-slug <new>` |
 | Have relevant entries automatically injected on every prompt | Recall is automatic — see [Auto-recall via the two-hook pattern](#auto-recall-via-the-two-hook-pattern) below |
 | Manually search the vault from the shell | `python3 ~/Antigravity/agent-toolkit/skills/memory/scripts/recall.py query "<text>"` |
-| Run reflection over the current session to mine durable entries | (deferred to plan #7a part 3 — `/memory reflect`) |
+| Run reflection on the current session to mine durable entries | `/memory reflect` (manual) — see [Reflection sidecar — Stop + idle + manual](#reflection-sidecar--stop--idle--manual) below |
+| Have crashed sessions recovered automatically when you next start Claude Code | Crash-recovery markers are automatic — see [Crash-recovery markers](#crash-recovery-markers) below |
 
 ## Scenario 1 — Save a new preference
 
@@ -182,6 +184,79 @@ Flags:
 
 Antigravity has no first-class hook surface as of v0.9.0, so the SessionStart + UserPromptSubmit hooks land on Claude Code only. The functional equivalent for Antigravity is a future **always-on rule** that reads from `_always-load/` at agent boot + a per-prompt skill auto-invocation — tracked under MemoryVault's discovery-mining part. The recall engine itself (`recall.py`) is host-agnostic and exposed via the CLI today; Antigravity skills can shell out to it directly.
 
+## Reflection sidecar — Stop + idle + manual
+
+Three trigger surfaces run the **same mining logic** in `skills/memory/scripts/reflect.py`. Together they form the **write loop** — distinct from the recall side documented above.
+
+### Mining algorithm
+
+Each trigger reads a Claude Code session transcript (at `~/.claude/projects/<cwd-slug>/<session-id>.jsonl`) and runs two parallel mining passes:
+
+- **3-category memory mine**: scans user + assistant messages for explicit user preferences (`always X` / `never Y` / `I prefer Z` / `use X not Y` patterns → **HIGH** confidence), user corrections (`no, that's wrong` / `you should have X` patterns → **MEDIUM**), fixes & workarounds (`fixed by X` / `resolved by Y` / `workaround` patterns → **MEDIUM**), and workflow patterns (any tool used 3+ times → **MEDIUM**).
+- **Idea-candidate mine**: scans for forward-looking statements (`we should also` / `later we could` / `follow-up` / `could be its own` patterns).
+
+Each mined candidate gets full instrumentation per Tech Debt #7: category + confidence + slug suggestion + title + body + rationale (which pattern matched) + verbatim excerpts (windowed ±80 chars) + occurrences count. The rationale + excerpts make `/memory inspect` (future plan) the auditing surface for "why did this candidate surface?".
+
+### Tri-modal routing — 3 modes
+
+After mining, candidates route per **confidence tier** + selected mode:
+
+| Mode | HIGH | MEDIUM | LOW | Idea |
+|---|---|---|---|---|
+| `auto` (default; hook-safe) | canonical save | `_inbox/` | `_inbox/` | `_inbox/` |
+| `silent` | canonical save | canonical save (auto-approve) | `_inbox/` | `_inbox/` |
+| `interactive` | canonical save | stdin prompt (approve / reject / skip / inbox) | `_inbox/` | `_inbox/` |
+
+Mode resolution: `--route-mode` CLI flag → `MEMORY_REVIEW_MODE` env var → default `auto`. `interactive` mode falls back to `auto` when stdin isn't a TTY (preserves the never-block-the-hook contract).
+
+### Trigger 1: manual `/memory reflect`
+
+User-invokable; runs against the current Claude Code session by default or an arbitrary transcript path via `--session`. Useful for dogfooding new patterns, re-running over an old session, or doing on-demand triage:
+
+```bash
+python3 ~/Antigravity/agent-toolkit/skills/memory/scripts/reflect.py \
+  ~/.claude/projects/<cwd-slug>/<session-id>.jsonl \
+  --summary --route --route-mode interactive
+```
+
+`--summary` prefixes a 1-line summary record; `--route` enables the routing pass (requires `--vault-path` or `MEMORY_VAULT_PATH`). Without `--route`, the script just emits candidates on stdout for inspection.
+
+### Trigger 2: Stop-event hook (`memory-reflect-stop`)
+
+Auto-installed at `.claude/hooks/memory-reflect-stop.sh`. Fires on Claude Code's `Stop` event (end of each agent turn). Parses the Stop payload for `session_id` + `cwd`, resolves the transcript path, invokes `reflect.py --route`, emits a transparency line on stderr:
+
+```
+[memory-reflect-stop] Mined 3 memory + 1 idea candidates from <transcript-path>; saved 1, inboxed 3
+```
+
+Coexists with `commit-on-stop` (both register on the Stop event). Hook context has no TTY, so the `interactive` mode falls back to `auto` automatically. Never blocks session end — graceful-skip exhaustively across missing reflect.py / no session_id on stdin / transcript missing / MEMORY_VAULT_PATH unset.
+
+### Trigger 3: idle-time hook (`memory-reflect-idle`)
+
+Auto-installed at `.claude/hooks/memory-reflect-idle.sh`. **First new agent-toolkit hook primitive** — Claude Code has no native "idle" event, so this hook fires on `SessionStart` instead (alongside `memory-recall-session-start`) and scans `.harness/session-id-*.start` markers for orphans (markers older than 1 hour = sessions where Stop didn't fire — Claude Code crashed / kill -9 / force-quit). For each orphan, it invokes `reflect.py --route` retroactively, renames `.start` → `.reflected` on success. Also GCs `.reflected` markers older than 30 days.
+
+Three convergent trigger surfaces give layered coverage:
+
+1. **SessionStart event** (auto, every session boot): catches the common "operator returned after break" case.
+2. **Manual invocation**: `bash .claude/hooks/memory-reflect-idle.sh` for on-demand orphan sweep.
+3. **Cron / launchd / scheduled task** (operator-installed; opt-in for aggressive coverage): example crontab — `*/30 * * * * cd /path/to/project; bash .claude/hooks/memory-reflect-idle.sh`.
+
+Idle threshold + GC threshold are env-overridable: `MEMORY_IDLE_THRESHOLD_SEC` (default 3600) + `MEMORY_REFLECTED_GC_SEC` (default 2592000).
+
+## Crash-recovery markers
+
+Locked design call B2.ii: every session writes a `.harness/session-id-<uuid>.start` marker at SessionStart; Stop hook renames it to `.reflected` after successful reflection. The marker format is plain text (not JSON — operator-debuggable by hand):
+
+```
+session_id: <uuid>
+started_at: <iso-8601-utc>
+transcript: <absolute-path-to-jsonl>
+```
+
+If Stop doesn't fire (crash, kill -9, force-quit), the `.start` marker stays — the next SessionStart triggers the idle hook, which scans for `.start` markers older than the idle threshold, runs `reflect.py --route` retroactively, and renames them. No agent observation lost across crashed sessions.
+
+Markers live in `.harness/` (gitignored — runtime metadata only; no PII / transcript content). The idle hook's 30-day GC keeps the directory bounded without operator intervention.
+
 ## Vault path resolution
 
 The skill resolves the MemoryVault root in this order:
@@ -230,6 +305,21 @@ The vault has grown large enough that the walk + frontmatter parse + read overru
 
 **Recall returns "embedding unavailable" stderr but still surfaces results**
 This is the graceful-skip path firing — no API key + no local model, so vec search short-circuits and recall falls back to grep+frontmatter-only. Results are still returned; semantic-paraphrase matches won't surface but exact-keyword matches will. Configure `VOYAGE_API_KEY` / `ANTHROPIC_API_KEY` env var (api mode) or `pip install sentence-transformers` + set `MEMORY_USE_API_EMBEDDINGS=false` (local mode) to restore the full pipeline.
+
+**Stop hook fired but no entries appear in MemoryVault**
+Check the hook's stderr line in Claude Code logs. If it says `saved 0, inboxed N`, no HIGH-confidence patterns were detected — all candidates went to `_inbox/` for triage. Check `<vault>/personal-private/_inbox/` for the mined candidates; review + promote via `/memory save` (or `/memory evolve` to supersede an existing entry). If stderr says `MEMORY_VAULT_PATH set?`, the hook's environment didn't inherit the vault env var — set it globally in your shell config (`.bashrc` / `.zshrc`) so Claude Code's hook child processes see it.
+
+**Idle hook never seems to fire**
+The idle hook is registered on `SessionStart` (not a true idle event — Claude Code doesn't expose one). It scans for orphan `.harness/session-id-*.start` markers only when SessionStart events fire (boot / resume / clear / compact). For more aggressive coverage, set up a cron job: `*/30 * * * * cd /path/to/project; bash .claude/hooks/memory-reflect-idle.sh`. Also: the default idle threshold is 1 hour — markers younger than that are skipped (session might still be active). Override via `MEMORY_IDLE_THRESHOLD_SEC` env var for testing.
+
+**Crashed session — what should I see?**
+After Claude Code crashes mid-session: `.harness/session-id-<sid>.start` should still exist (Stop never fired, so no rename). Next time you boot Claude Code in that project: SessionStart fires, `memory-reflect-idle.sh` scans, finds the orphan past the 1-hour threshold, runs `reflect.py --route` against the crashed session's transcript, renames the marker to `.reflected`. If the marker doesn't get reflected even after waiting 1+ hour: check `MEMORY_VAULT_PATH` is set in the operator's shell config, and `reflect.py --route` requires the vault — without it, the rename doesn't happen + the marker stays for retry next session.
+
+**Interactive `/memory reflect` doesn't prompt; goes straight to inbox**
+The interactive mode requires stdin to be a TTY. If you piped output / redirected stdin / ran from a non-interactive context, `--route-mode interactive` falls back to `auto` (which sends MEDIUM to `_inbox/`). Re-run from an interactive shell or use `--route-mode silent` to auto-approve MEDIUM candidates without prompting.
+
+**`_inbox/` is growing unchecked**
+Low-signal candidates accumulate in `_inbox/` over time. There's no automatic triage — that's plan #7a part 5's `seed-pass` scope. For now, periodically: `ls <vault>/personal-private/_inbox/` to see what's piled up; for each entry, decide to `/memory save` (promote to canonical), `/memory evolve` (supersede an existing entry), or `rm` (reject). Future plans will add `/memory triage` for batch processing.
 
 ## See also
 
