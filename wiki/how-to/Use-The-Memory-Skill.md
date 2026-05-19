@@ -4,7 +4,7 @@
 > **Goal:** capture durable preferences / workflows / fixes to MemoryVault so the agent's behavior compounds across sessions. Evolve entries when preferences change without losing the audit trail.
 > **Prereqs:** `agent-toolkit` installed (skill lands at `.claude/skills/memory/` + `.agent/skills/memory/`); an Obsidian vault folder set up as your `MemoryVault/` root + the path exported as `MEMORY_VAULT_PATH` (or passed via `--vault-path` on each invocation). Optional: `pip install sqlite-vec sentence-transformers` for full vec-index + offline embedding; `VOYAGE_API_KEY` or `ANTHROPIC_API_KEY` env var for online embedding. Without these the skill still works (file writes always succeed; embedding work queues for later).
 
-The `memory` skill ships as plan #7a parts 1 + 2 + 3 of [MemoryVault — Permanent agent memory via Obsidian-vault-folder + reflection sidecar](../explanation/designs/memoryvault.md). This page covers the **two write primitives** (`/memory save` + `/memory evolve`), the **two recall hooks** (SessionStart + UserPromptSubmit), the **`/memory reflect` skill + Stop / idle reflection hooks** (the write loop), and **crash-recovery markers**. Idea ledger + discovery come in subsequent parts.
+The `memory` skill ships as plan #7a parts 1 + 2 + 3 + 4 of [MemoryVault — Permanent agent memory via Obsidian-vault-folder + reflection sidecar](../explanation/designs/memoryvault.md). This page covers the **two write primitives** (`/memory save` + `/memory evolve`), the **two recall hooks** (SessionStart + UserPromptSubmit), the **`/memory reflect` skill + Stop / idle reflection hooks** (the write loop), **crash-recovery markers**, and the **two-tier idea ledger** (`Ideas.md` surface + `_idea-incubator/` deep research + `/memory promote` graduation + GC). Discovery-mining + seed-pass come in subsequent parts.
 
 ## ⚡ At-a-glance
 
@@ -16,7 +16,10 @@ The `memory` skill ships as plan #7a parts 1 + 2 + 3 of [MemoryVault — Permane
 | `python3 recall.py query "<text>"` | — | Top-K matches as one JSON record per line | `skills/memory/scripts/recall.py` |
 | `/memory reflect` | `[--session <path>] [--memory-only \| --idea-only]` | Mined candidate JSON records on stdout (one per line); routing summary on stderr; HIGH→canonical save, MEDIUM→see `--route-mode`, LOW→`_inbox/` | `skills/memory/scripts/reflect.py` |
 | **(reflect, auto)** | — (fires on Stop + on every SessionStart for idle scan) | Mines + routes candidates per the tri-modal heuristic; renames `.start` → `.reflected` markers on success | `skills/memory/scripts/reflect.py` + 2 Claude Code hooks |
-| `/memory search` | — | (stub; thin wrap of `recall.py query` lands in plan #7a part 4) | — |
+| **(idea ledger, auto)** | — (idea candidates from reflection) | Tier-1 surface section in `~/Obsidian/Ideas.md` + Tier-2 deep-research dir at `_idea-incubator/<slug>/` | `skills/memory/scripts/ideas_surface.py` + `ideas_incubator.py` + `memory-idea-researcher` sub-agent |
+| `/memory promote idea <slug>` | — | Moves `_idea-incubator/<slug>/` → `personal-projects/<slug>/`; annotates Ideas.md; recalculates vec-index | `skills/memory/scripts/ideas_promote.py promote` |
+| `python3 ideas_promote.py gc` | — | Walks `_idea-incubator/`; prompts Keep/Archive/Delete on entries older than 6 months | `skills/memory/scripts/ideas_promote.py gc` |
+| `/memory search` | — | (stub; thin wrap of `recall.py query` lands with seed-pass part) | — |
 
 ## When to use which sub-command
 
@@ -30,6 +33,9 @@ The `memory` skill ships as plan #7a parts 1 + 2 + 3 of [MemoryVault — Permane
 | Manually search the vault from the shell | `python3 ~/Antigravity/agent-toolkit/skills/memory/scripts/recall.py query "<text>"` |
 | Run reflection on the current session to mine durable entries | `/memory reflect` (manual) — see [Reflection sidecar — Stop + idle + manual](#reflection-sidecar--stop--idle--manual) below |
 | Have crashed sessions recovered automatically when you next start Claude Code | Crash-recovery markers are automatic — see [Crash-recovery markers](#crash-recovery-markers) below |
+| Capture an idea / follow-up surfaced by the reflection sidecar | Auto — surfaces in `~/Obsidian/Ideas.md` after operator confirmation; see [Idea ledger — two-tier capture](#idea-ledger--two-tier-capture) |
+| Graduate an idea to a real project | `/memory promote idea <slug>` — moves to `personal-projects/<slug>/` + annotates Ideas.md |
+| GC old incubator entries (6+ months idle) | `python3 ideas_promote.py gc` — prompts Keep / Archive / Delete per entry |
 
 ## Scenario 1 — Save a new preference
 
@@ -257,6 +263,113 @@ If Stop doesn't fire (crash, kill -9, force-quit), the `.start` marker stays —
 
 Markers live in `.harness/` (gitignored — runtime metadata only; no PII / transcript content). The idle hook's 30-day GC keeps the directory bounded without operator intervention.
 
+## Idea ledger — two-tier capture
+
+When the reflection sidecar surfaces an **idea candidate** (forward-looking statement: `we should also`, `later we could`, `follow-up`, `could be its own project`), the idea-ledger system writes it to **two destinations** — one for human reading + one for agent recall:
+
+### Tier 1 — Surface (`~/Obsidian/Ideas.md`)
+
+A single append-only file at the user's Obsidian vault root. Each idea gets a section:
+
+```
+## YYYY-MM-DD: <Idea Title>
+<2-sentence summary>
+See deep research: [[MemoryVault/personal-private/_idea-incubator/<slug>/_index.md]]
+```
+
+The wikilink resolves in Obsidian — clicking it opens the deep-research dir. Sections accumulate sorted by date-prefix; the file is the operator's surface for "what ideas have surfaced over time?".
+
+**Lives OUTSIDE MemoryVault** — at `~/Obsidian/Ideas.md` by default. Override via `IDEAS_SURFACE_PATH` env var if the operator's Obsidian vault root is elsewhere.
+
+### Tier 2 — Deep research (`_idea-incubator/<slug>/`)
+
+An incubator directory inside MemoryVault with 4 files per idea:
+
+```
+_idea-incubator/<slug>/
+├── _index.md                # frontmatter + agent reasoning + cross-refs
+├── research-pending.md      # placeholder for memory-idea-researcher sub-agent
+├── related-memoryvault.md   # placeholder for cross-ref scan
+└── related-obsidian.md      # placeholder for Obsidian-notes scan
+```
+
+`_index.md` frontmatter is locked: `kind: idea / status: incubating / slug / surfaced_at / surfaced_in_session / research_budget_*`. Body has surface summary + agent reasoning (rationale + supporting transcript excerpts) + deep-research status + budget table + promotion/GC explanation.
+
+**Research budget caps** (locked design call B1.i):
+
+| Cap | Default | Override |
+|---|---|---|
+| Wall-time | 300s | `--budget-wall-time-sec N` |
+| Web fetches | 3 | `--budget-web-fetches N` |
+| Tokens (in+out) | 5000 | `--budget-tokens N` |
+
+The `memory-idea-researcher` sub-agent enforces these via timeouts; budget overrun produces partial results + a `research_status: partial` frontmatter flag. Never blocks the calling session.
+
+### A3 permeable-write-boundary
+
+Writes to `~/Obsidian/Ideas.md` are outside MemoryVault — first-class consumers of the **A3 locked design call** (permeable write boundary). Every cross-boundary write goes through `permeable_boundary.confirm_write_outside_memoryvault()`:
+
+- **Reflection-driven** (agent-initiated): mode `interactive` (default) → prompts the operator with target path + content preview + rationale; default action is **deny** (safer); explicit `y`/`yes` approves.
+- **Direct user invocation** (explicit request — future `/memory idea` command): mode `silent` typically passes since the operator already requested the write.
+- **Hook context** (non-TTY): mode `auto` → **denies** unconditionally. Never silent writes outside MemoryVault from non-interactive contexts.
+- **Override**: set `MEMORY_REVIEW_MODE=silent` in the operator's shell to pre-approve all cross-boundary writes (useful for batch / scripted workflows).
+
+The boundary is enforced at the helper level — every cross-boundary writer (`ideas_surface.py`, future discovery-mining, future seed-pass) reuses the same primitive, so the contract is consistent.
+
+### Deep-research sub-agent (`memory-idea-researcher`)
+
+Auto-installed at `.claude/agents/memory-idea-researcher.md`. Read-only allowlist: `Read`, `Glob`, `Grep`, `WebFetch`. Caller-supplies-inline-rubric pattern (same as `evaluator` from plan #3).
+
+Dispatched after `ideas_incubator.py` creates the skeleton — fills the 3 placeholder files via 3 passes (in order of cheapness):
+
+1. **Cross-ref MemoryVault** — uses the recall engine to find existing entries related to the idea (so "did we already think about this?" is answered first). Writes to `related-memoryvault.md`.
+2. **Obsidian-notes scan** — keyword + filename matches across the operator's Obsidian vault (excluding the `MemoryVault/` subtree to avoid overlap). **Read-only** — never modifies Obsidian notes. Writes to `related-obsidian.md`.
+3. **Web research** — up to N web fetches on queries derived from the idea's keywords. Each fetch result becomes `research-<source-slug>.md`. Replaces the initial `research-pending.md` placeholder.
+
+After all 3 passes (or on budget overrun), the sub-agent updates `_index.md`'s frontmatter `research_status:` field to `complete` or `partial`. **Never modifies `_index.md` body** — the body is the operator's curated reasoning surface.
+
+### Promotion — `/memory promote idea <slug>`
+
+When an idea is worth investing in:
+
+```bash
+/memory promote idea <slug>
+# OR
+python3 ~/Antigravity/agent-toolkit/skills/memory/scripts/ideas_promote.py promote <slug> \
+  --vault-path ~/Library/CloudStorage/GoogleDrive-<account>/My\ Drive/Obsidian/MemoryVault \
+  --mode silent
+```
+
+What happens:
+
+1. **Validates** that `_idea-incubator/<slug>/` exists + `personal-projects/<slug>/` doesn't (collision guard).
+2. **Moves** `_idea-incubator/<slug>/` → `personal-projects/<slug>/` via `shutil.move()` (cross-filesystem-safe).
+3. **Recalculates vec-index entries** — for each file in the new location, queues delete (old path) + upsert (new path with re-embedded text). Graceful-skip if vec-index unavailable.
+4. **Annotates `Ideas.md`** — finds the section whose wikilink references the slug, appends `→ promoted YYYY-MM-DD to personal-private/personal-projects/<slug>/` right after the wikilink line. **Routes through A3 boundary** (operator-initiated promotion typically passes `--mode silent`).
+
+### Garbage collection (6-month default)
+
+Incubator entries that go untouched accumulate. The GC pass walks `_idea-incubator/<slug>/`, reads each entry's `_index.md` frontmatter `updated:` field (fallback to file mtime), and presents an interactive prompt for entries older than 6 months:
+
+```
+────────────────────────────────────────────────────────────────────────
+Incubator entry idle: <slug> (240 days since last update)
+────────────────────────────────────────────────────────────────────────
+Action: [k]eep (defer) / [a]rchive / [d]elete (default: k):
+```
+
+- **Keep** (default + non-TTY): touches `_index.md` mtime to exit the GC window; entry re-evaluated in 6 months.
+- **Archive**: moves to `_idea-incubator/_archive/<slug>/`. Preserves history but excludes from active recall.
+- **Delete**: `rm -rf` the dir. Irreversible. Vec-index orphans documented as v1 tradeoff (next reindex pass cleans).
+
+**Never silent deletion** — non-TTY contexts default every prompt to Keep. To run GC non-interactively, pipe answers via stdin from an explicit script (the operator has explicitly chosen each entry's fate).
+
+Override the threshold via `--gc-months N`:
+
+```bash
+python3 ideas_promote.py gc --vault-path <vault> --gc-months 3
+```
+
 ## Vault path resolution
 
 The skill resolves the MemoryVault root in this order:
@@ -320,6 +433,18 @@ The interactive mode requires stdin to be a TTY. If you piped output / redirecte
 
 **`_inbox/` is growing unchecked**
 Low-signal candidates accumulate in `_inbox/` over time. There's no automatic triage — that's plan #7a part 5's `seed-pass` scope. For now, periodically: `ls <vault>/personal-private/_inbox/` to see what's piled up; for each entry, decide to `/memory save` (promote to canonical), `/memory evolve` (supersede an existing entry), or `rm` (reject). Future plans will add `/memory triage` for batch processing.
+
+**Ideas.md write was denied (permeable-boundary)**
+The A3 boundary helper denied a cross-boundary write — typically because the hook ran non-interactively (auto mode → unconditional deny) or the operator answered `n`/empty at the interactive prompt. The reflection sidecar emits a stderr warning; the idea candidate stays in the calling session's output but doesn't land in `Ideas.md`. To approve future writes without prompting, set `MEMORY_REVIEW_MODE=silent` in your shell config.
+
+**`_idea-incubator/<slug>/` exists but research files are empty placeholders**
+The `ideas_incubator.py` writer creates the skeleton; the `memory-idea-researcher` sub-agent fills the placeholders at dispatch. Until the sub-agent runs against the slug, `research-pending.md` + `related-*.md` stay as placeholders. Operator-driven triage: fill them by hand, or dispatch the sub-agent via your parent agent.
+
+**`/memory promote` succeeded but Ideas.md wasn't annotated**
+Check the promote output's `ideas_annotation:` field. Three possible values: `written` (success), `denied_or_not_found` (A3 boundary denied OR the section's wikilink doesn't match the auto-search regex — operator edited the section format manually), `no_ideas_file` (Ideas.md doesn't exist). For denied: re-run with `--mode silent`. For section_not_found: manually annotate or revert the section's wikilink format.
+
+**GC scanned old entries but didn't delete anything**
+The GC pass defaults to Keep when stdin isn't a TTY — locked design call B1.i says **never silent deletion**. To actually delete entries: run GC interactively (`python3 ideas_promote.py gc --vault-path <vault>` in your terminal) and type `d` at the prompt. For batch deletion, pipe explicit answers via stdin (`echo "d\nd\na\nk" | python3 ideas_promote.py gc ...`).
 
 ## See also
 
