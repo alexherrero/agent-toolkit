@@ -46,6 +46,7 @@ try {
         '.claude/skills/memory/scripts/permeable_boundary.py',
         '.claude/skills/memory/scripts/ideas_surface.py',
         '.claude/skills/memory/scripts/ideas_incubator.py',
+        '.claude/skills/memory/scripts/ideas_promote.py',
         '.agent/skills/memory/SKILL.md',
         '.agent/skills/memory/scripts/save.py',
         '.agent/skills/memory/scripts/evolve.py',
@@ -56,6 +57,7 @@ try {
         '.agent/skills/memory/scripts/permeable_boundary.py',
         '.agent/skills/memory/scripts/ideas_surface.py',
         '.agent/skills/memory/scripts/ideas_incubator.py',
+        '.agent/skills/memory/scripts/ideas_promote.py',
         # Standalone agent: evaluator. claude-code is single-file;
         # antigravity wraps the agent as a skill. (gemini-cli destination
         # .gemini/agents/evaluator.md removed in v0.9.0.)
@@ -1539,6 +1541,86 @@ print('OK')
         }
     } finally {
         Remove-Item -LiteralPath $miincub -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    # ── /memory promote + GC test (plan #7a part 4 task 4) ─────────────────
+    Write-Host '==> /memory promote + GC test (plan #7a part 4 task 4)'
+    $ipPy = Join-Path $scratch '.claude/skills/memory/scripts/ideas_promote.py'
+    if (-not (Test-Path -LiteralPath $ipPy)) {
+        throw "ideas_promote.py not installed at $ipPy"
+    }
+    $mipromote = Join-Path ([System.IO.Path]::GetTempPath()) ("toolkit-mipromote-" + [System.Guid]::NewGuid().ToString('N'))
+    $promoteIdeasDir = Join-Path ([System.IO.Path]::GetTempPath()) ("toolkit-promote-ideas-" + [System.Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $mipromote -Force | Out-Null
+    New-Item -ItemType Directory -Path $promoteIdeasDir -Force | Out-Null
+    $promoteIdeasMd = Join-Path $promoteIdeasDir 'Ideas.md'
+    try {
+        # Seed incubator + Ideas.md section
+        $iiPyPath = Join-Path $scratch '.claude/skills/memory/scripts/ideas_incubator.py'
+        $isPyPath = Join-Path $scratch '.claude/skills/memory/scripts/ideas_surface.py'
+        python3 $iiPyPath 'Test promote flow' 'End-to-end promote verification.' '--vault-path' $mipromote 2>$null | Out-Null
+        python3 $isPyPath 'Test promote flow' 'End-to-end promote verification.' '--ideas-path' $promoteIdeasMd '--mode' 'silent' 2>$null | Out-Null
+
+        # Test A: promote happy path
+        $env:IDEAS_SURFACE_PATH = $promoteIdeasMd
+        try {
+            $ipAOut = python3 $ipPy 'promote' 'test-promote-flow' '--vault-path' $mipromote '--mode' 'silent' 2>&1 | Out-String
+        } finally {
+            Remove-Item -Path Env:IDEAS_SURFACE_PATH -ErrorAction SilentlyContinue
+        }
+        if ($ipAOut -notmatch '"promoted": true') {
+            throw "promote did not emit promoted:true. output: $ipAOut"
+        }
+        if (Test-Path -LiteralPath (Join-Path $mipromote 'personal-private/_idea-incubator/test-promote-flow')) {
+            throw "incubator dir still exists after promote"
+        }
+        if (-not (Test-Path -LiteralPath (Join-Path $mipromote 'personal-private/personal-projects/test-promote-flow'))) {
+            throw "personal-projects/test-promote-flow/ not created"
+        }
+        $ideasContent = Get-Content -LiteralPath $promoteIdeasMd -Raw
+        if ($ideasContent -notmatch '(?m)^→ promoted \d{4}-\d{2}-\d{2} to personal-private/personal-projects/test-promote-flow$') {
+            throw "Ideas.md annotation missing or wrong format"
+        }
+        if ($ipAOut -notmatch '"ideas_annotation": "written"') {
+            throw "promote output did not report ideas_annotation: written"
+        }
+
+        # Test B: missing slug → exit 1
+        python3 $ipPy 'promote' 'nonexistent-idea' '--vault-path' $mipromote 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 1) {
+            throw "missing slug exited $LASTEXITCODE (expected 1)"
+        }
+
+        # Test C: target collision → exit 1
+        python3 $iiPyPath 'Test promote flow' 'Second try same title.' '--vault-path' $mipromote '--slug' 'test-promote-flow' 2>$null | Out-Null
+        python3 $ipPy 'promote' 'test-promote-flow' '--vault-path' $mipromote 2>$null | Out-Null
+        if ($LASTEXITCODE -ne 1) {
+            throw "target collision exited $LASTEXITCODE (expected 1)"
+        }
+
+        # Test D: gc with fresh entries → deleted:0
+        $ipDOut = python3 $ipPy 'gc' '--vault-path' $mipromote 2>&1 | Out-String
+        if ($ipDOut -notmatch '"deleted": 0') {
+            throw "gc with fresh entries reported deleted > 0. output: $ipDOut"
+        }
+
+        # Test E: gc with non-TTY + force-old entry → defaults to keep
+        $oldIndex = Join-Path $mipromote 'personal-private/_idea-incubator/test-promote-flow/_index.md'
+        $oldTimestamp = (Get-Date).AddDays(-365)
+        (Get-Item -LiteralPath $oldIndex).LastWriteTime = $oldTimestamp
+        # Drive ideas_promote gc with non-TTY stdin (redirect from $null)
+        $stdoutFile = Join-Path $mipromote '.gc-out.log'
+        $gcProc = Start-Process -FilePath 'python3' -ArgumentList @($ipPy, 'gc', '--vault-path', $mipromote) -NoNewWindow -Wait -RedirectStandardInput $null -RedirectStandardOutput $stdoutFile -PassThru
+        $ipEOut = Get-Content -LiteralPath $stdoutFile -Raw
+        if ($ipEOut -notmatch '"deleted": 0') {
+            throw "gc with non-TTY stdin deleted entries (never-silent-delete contract broken). output: $ipEOut"
+        }
+        if (-not (Test-Path -LiteralPath (Join-Path $mipromote 'personal-private/_idea-incubator/test-promote-flow'))) {
+            throw "gc deleted old entry under non-TTY stdin"
+        }
+    } finally {
+        Remove-Item -LiteralPath $mipromote -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $promoteIdeasDir -Recurse -Force -ErrorAction SilentlyContinue
     }
 
     # ── validate-manifests negative test: gemini-cli rejected with v0.9.0 msg ─

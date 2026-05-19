@@ -51,6 +51,7 @@ expected=(
   .claude/skills/memory/scripts/permeable_boundary.py
   .claude/skills/memory/scripts/ideas_surface.py
   .claude/skills/memory/scripts/ideas_incubator.py
+  .claude/skills/memory/scripts/ideas_promote.py
   .agent/skills/memory/SKILL.md
   .agent/skills/memory/scripts/save.py
   .agent/skills/memory/scripts/evolve.py
@@ -61,6 +62,7 @@ expected=(
   .agent/skills/memory/scripts/permeable_boundary.py
   .agent/skills/memory/scripts/ideas_surface.py
   .agent/skills/memory/scripts/ideas_incubator.py
+  .agent/skills/memory/scripts/ideas_promote.py
   # Standalone agent: evaluator — claude-code is single-file destination;
   # antigravity wraps the agent as a skill. (gemini-cli destination
   # .gemini/agents/evaluator.md removed in v0.9.0.) memory-idea-researcher
@@ -1937,6 +1939,117 @@ if [[ ! -f "$RESEARCHER_ANTI" ]]; then
 fi
 
 rm -rf "$MIINCUB"
+
+# ── /memory promote + GC test (plan #7a part 4 task 4) ─────────────────────
+# Verify ideas_promote.py promote + gc subcommands:
+#   - promote moves _idea-incubator/<slug>/ → personal-projects/<slug>/
+#   - promote annotates Ideas.md section with → promoted YYYY-MM-DD
+#   - promote with missing slug → exit 1
+#   - promote with target collision → exit 1
+#   - gc with no entries → scanned: 0
+#   - gc with old entry + non-TTY stdin → defaults to keep (never silent delete)
+echo "==> /memory promote + GC test (plan #7a part 4 task 4)"
+IP_PY="$SCRATCH/.claude/skills/memory/scripts/ideas_promote.py"
+if [[ ! -f "$IP_PY" ]]; then
+  echo "FAIL: ideas_promote.py not installed at $IP_PY" >&2
+  exit 1
+fi
+MIPROMOTE="$(mktemp -d)"
+PROMOTE_IDEAS_DIR="$(mktemp -d)"
+PROMOTE_IDEAS_MD="$PROMOTE_IDEAS_DIR/Ideas.md"
+# Seed incubator entry + Ideas.md section
+python3 "$SCRATCH/.claude/skills/memory/scripts/ideas_incubator.py" \
+  'Test promote flow' 'End-to-end promote verification.' \
+  --vault-path "$MIPROMOTE" >/dev/null 2>&1
+python3 "$SCRATCH/.claude/skills/memory/scripts/ideas_surface.py" \
+  'Test promote flow' 'End-to-end promote verification.' \
+  --ideas-path "$PROMOTE_IDEAS_MD" --mode silent >/dev/null 2>&1
+
+# Test A: promote happy path
+IP_A_OUT="$(IDEAS_SURFACE_PATH="$PROMOTE_IDEAS_MD" python3 "$IP_PY" promote test-promote-flow \
+  --vault-path "$MIPROMOTE" --mode silent 2>&1)"
+if ! echo "$IP_A_OUT" | grep -qE '"promoted": true'; then
+  echo "FAIL: promote did not emit promoted:true. output: $IP_A_OUT" >&2
+  rm -rf "$MIPROMOTE" "$PROMOTE_IDEAS_DIR"
+  exit 1
+fi
+# Dir moved: incubator gone, personal-projects/ present
+if [[ -d "$MIPROMOTE/personal-private/_idea-incubator/test-promote-flow" ]]; then
+  echo "FAIL: incubator dir still exists after promote" >&2
+  rm -rf "$MIPROMOTE" "$PROMOTE_IDEAS_DIR"
+  exit 1
+fi
+if [[ ! -d "$MIPROMOTE/personal-private/personal-projects/test-promote-flow" ]]; then
+  echo "FAIL: personal-projects/test-promote-flow/ not created after promote" >&2
+  rm -rf "$MIPROMOTE" "$PROMOTE_IDEAS_DIR"
+  exit 1
+fi
+# Ideas.md annotation
+if ! grep -qE '^→ promoted [0-9]{4}-[0-9]{2}-[0-9]{2} to personal-private/personal-projects/test-promote-flow$' "$PROMOTE_IDEAS_MD"; then
+  echo "FAIL: Ideas.md annotation missing or wrong format" >&2
+  cat "$PROMOTE_IDEAS_MD" >&2
+  rm -rf "$MIPROMOTE" "$PROMOTE_IDEAS_DIR"
+  exit 1
+fi
+# JSON result includes ideas_annotation: written
+if ! echo "$IP_A_OUT" | grep -qE '"ideas_annotation": "written"'; then
+  echo "FAIL: promote output did not report ideas_annotation: written" >&2
+  rm -rf "$MIPROMOTE" "$PROMOTE_IDEAS_DIR"
+  exit 1
+fi
+
+# Test B: promote missing slug → exit 1
+IP_B=0
+python3 "$IP_PY" promote nonexistent-idea --vault-path "$MIPROMOTE" 2>/dev/null || IP_B=$?
+if [[ $IP_B -ne 1 ]]; then
+  echo "FAIL: missing slug exited $IP_B (expected 1)" >&2
+  rm -rf "$MIPROMOTE" "$PROMOTE_IDEAS_DIR"
+  exit 1
+fi
+
+# Test C: promote target collision → exit 1
+# Seed another incubator with same slug, then try to promote (should collide
+# with the already-promoted personal-projects/test-promote-flow/).
+python3 "$SCRATCH/.claude/skills/memory/scripts/ideas_incubator.py" \
+  'Test promote flow' 'Second try same title.' \
+  --vault-path "$MIPROMOTE" --slug test-promote-flow >/dev/null 2>&1
+IP_C=0
+python3 "$IP_PY" promote test-promote-flow --vault-path "$MIPROMOTE" 2>/dev/null || IP_C=$?
+if [[ $IP_C -ne 1 ]]; then
+  echo "FAIL: target collision exited $IP_C (expected 1)" >&2
+  rm -rf "$MIPROMOTE" "$PROMOTE_IDEAS_DIR"
+  exit 1
+fi
+
+# Test D: gc with no old entries → scanned counts current entries, all fresh
+IP_D_OUT="$(python3 "$IP_PY" gc --vault-path "$MIPROMOTE" 2>&1)"
+if ! echo "$IP_D_OUT" | grep -qE '"deleted": 0'; then
+  echo "FAIL: gc with fresh entries reported deleted > 0" >&2
+  echo "    output: $IP_D_OUT" >&2
+  rm -rf "$MIPROMOTE" "$PROMOTE_IDEAS_DIR"
+  exit 1
+fi
+
+# Test E: gc with non-TTY stdin + force-old entry → defaults to keep (never silent delete)
+# Backdate the _index.md mtime to be 1 year old; gc threshold is 6 months;
+# entry should be CANDIDATE for prompt; non-TTY stdin → defaults to keep.
+OLD_INDEX="$MIPROMOTE/personal-private/_idea-incubator/test-promote-flow/_index.md"
+python3 -c "import os, time; os.utime('$OLD_INDEX', (time.time() - 31536000, time.time() - 31536000))"
+IP_E_OUT="$(python3 "$IP_PY" gc --vault-path "$MIPROMOTE" 2>&1 </dev/null)"
+if ! echo "$IP_E_OUT" | grep -qE '"deleted": 0'; then
+  echo "FAIL: gc with non-TTY stdin deleted entries (should default to keep)" >&2
+  echo "    output: $IP_E_OUT" >&2
+  rm -rf "$MIPROMOTE" "$PROMOTE_IDEAS_DIR"
+  exit 1
+fi
+# Verify entry still exists
+if [[ ! -d "$MIPROMOTE/personal-private/_idea-incubator/test-promote-flow" ]]; then
+  echo "FAIL: gc deleted old entry under non-TTY stdin (never-silent-delete contract broken)" >&2
+  rm -rf "$MIPROMOTE" "$PROMOTE_IDEAS_DIR"
+  exit 1
+fi
+
+rm -rf "$MIPROMOTE" "$PROMOTE_IDEAS_DIR"
 
 # ── validate-manifests negative test: gemini-cli should error with v0.9.0 msg ─
 # Manifest containing 'gemini-cli' in supported_hosts must error with a clear

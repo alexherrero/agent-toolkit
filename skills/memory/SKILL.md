@@ -519,6 +519,82 @@ Output: one JSON record per line (`{"pass": "memory", "category": ..., "confiden
 > [!NOTE]
 > **Tri-modal routing implementation status**: plan #7a part 3 task 5 wires the actual HIGH→auto-save / MEDIUM→interactive-review / LOW→_inbox/ branches. Tasks 1-2 (this commit) ship the mining + skill body; tasks 3-4 add Stop + idle triggers; task 5 closes the routing loop; task 6 adds crash-recovery markers; task 7 documents the full surface.
 
+### `/memory promote`
+
+Graduates an `_idea-incubator/<slug>/` entry to a real project at `personal-projects/<slug>/` + annotates the corresponding `Ideas.md` section + recalculates vec-index entries. Plan #7a part 4 ships this body + the canonical Python implementation at `skills/memory/scripts/ideas_promote.py`.
+
+#### Invocation shape
+
+```
+/memory promote idea <slug> [--ideas-path <path>] [--mode <silent|interactive|auto>]
+```
+
+| Arg | Required | Default | Meaning |
+|---|---|---|---|
+| `<slug>` | yes | — | Existing incubator slug under `personal-private/_idea-incubator/<slug>/`. |
+| `--ideas-path <path>` | no | `$IDEAS_SURFACE_PATH` env or `~/Obsidian/Ideas.md` | Override Ideas.md location. |
+| `--mode <m>` | no | `interactive` (or `$MEMORY_REVIEW_MODE`) | Permeable-boundary mode for the Ideas.md annotation write. `silent` pre-approves; explicit user-typed promotion typically passes `silent` since the user already requested the operation. |
+
+#### Step-by-step flow
+
+**Step 1 — Resolve vault path** via the chain `--vault-path` arg → `MEMORY_VAULT_PATH` env. Halt with clear next-step on failure.
+
+**Step 2 — Verify incubator entry exists** at `<vault>/personal-private/_idea-incubator/<slug>/`. If missing, halt with `"incubator entry not found: <path> (check slug; list with ls _idea-incubator/)"`. If a `personal-projects/<slug>/` already exists, halt to avoid clobber — operator picks a new slug or removes the existing.
+
+**Step 3 — Move the directory.** `shutil.move(_idea-incubator/<slug>, personal-projects/<slug>)`. Cross-filesystem-safe (uses copy + delete fallback). Atomic at the OS level for same-FS moves.
+
+**Step 4 — Recalculate vec-index entries.** For each `.md` file under the new `personal-projects/<slug>/` location: enqueue `op: delete` for the old path (`personal-private/_idea-incubator/<slug>/...`) + `op: upsert` for the new path with re-embedded text. Operator runs `python3 vec_index.py drain --vault-path <vault>` (or future idle-hook drain) to actually process. Graceful-skip if `vec_index` module missing.
+
+**Step 5 — Annotate Ideas.md section.** Find the section whose wikilink references `_idea-incubator/<slug>/_index.md`; append `→ promoted YYYY-MM-DD to personal-private/personal-projects/<slug>/` annotation right after the wikilink line. **Permeable-boundary check fires here** (Ideas.md is outside MemoryVault — the A3 helper `confirm_write_outside_memoryvault()` confirms via `--mode` resolution). If denied, the move + vec-index recalc already happened — the operator can manually annotate; the return value indicates "ideas_annotation: denied".
+
+**Step 6 — Return confirmation.** Display:
+
+```
+Promoted <slug> to personal-private/personal-projects/<slug>/
+  incubator_dir → moved
+  vec_index: <stats>
+  ideas_annotation: written | denied | section_not_found
+```
+
+If section_not_found: the operator can manually annotate (the auto-search assumed the wikilink format from the original `_idea-incubator/<slug>/_index.md` reference; if the operator edited the section format, the regex won't find it).
+
+#### `/memory promote gc` — garbage collection
+
+Variant subcommand for the 6-month GC sweep:
+
+```
+python3 ~/Antigravity/agent-toolkit/skills/memory/scripts/ideas_promote.py gc \
+  --vault-path <vault> [--gc-months 6]
+```
+
+Walks `_idea-incubator/<slug>/` dirs, computes age from `_index.md` `updated:` frontmatter (falls back to file mtime if absent). Entries older than `gc_months × 30` days get an interactive **Keep / Archive / Delete** prompt:
+
+```
+────────────────────────────────────────────────────────────────────────
+Incubator entry idle: <slug> (<N> days since last update)
+────────────────────────────────────────────────────────────────────────
+Action: [k]eep (defer) / [a]rchive / [d]elete (default: k):
+```
+
+- **Keep**: `_index.md` mtime touched (entry exits the GC window; re-evaluated in 6 months).
+- **Archive**: moves to `_idea-incubator/_archive/<slug>/` (preserves history, excludes from active recall).
+- **Delete**: `rm -rf` the dir (irreversible — vec-index entries pointing at deleted paths become orphans on next drain).
+- **Default (non-TTY or empty input)**: Keep — locked design call B1.i is *never silent deletion*; without operator confirmation the entry stays.
+
+#### Failure modes (graceful)
+
+- **Slug not found** → halt step 2 with the actual path that was checked.
+- **Target collision** (`personal-projects/<slug>/` exists) → halt with operator next-step.
+- **Cross-filesystem move** → falls back to copy+delete via shutil.move; slow but correct.
+- **vec-index unavailable** → recalc step is no-op + returns `{"skipped": -1}` stat; operator runs reindex later.
+- **Ideas.md missing** → ideas_annotation = "no_ideas_file"; promotion otherwise succeeds.
+- **A3 boundary denied** for Ideas.md write → ideas_annotation = "denied"; promotion otherwise succeeds (operator can manually annotate).
+
+#### Anti-patterns
+
+- **Don't pick the same slug as an existing personal-projects/<slug>/.** Pre-check would help here but the operator typed the slug; we halt rather than guess.
+- **Don't run GC in batch / non-interactive contexts without `--mode silent`.** Default GC behavior defaults every prompt to Keep when stdin isn't a TTY, which is correct (never silent deletion), but means non-TTY runs do nothing. For batch GC with explicit pre-approval, the operator runs the gc subcommand interactively.
+
 ### `/memory search`
 
 > [!NOTE]
