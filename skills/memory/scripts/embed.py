@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # embed.py — text embedding for MemoryVault entries via sentence-transformers.
 #
-# v0.10.0 (2026-05-20): API mode dropped. Local sentence-transformers is the
+# v0.9.2 (2026-05-20): API mode dropped. Local sentence-transformers is the
 # only production mode; stub mode remains for tests. See ADR 0001's
 # 2026-05-20 amendment for the rationale (operator-config-assumption shift
 # to desktop-class hardware + Claude-Ultra-subscriber-without-API-key
@@ -10,7 +10,7 @@
 # Two modes:
 #   - "local" — sentence-transformers via Python. Default. Requires the
 #               `sentence-transformers` pip package (hard dep as of
-#               v0.10.0; install scripts pull it automatically). Lazy-
+#               v0.9.2; install scripts pull it automatically). Lazy-
 #               loads `BAAI/bge-large-en-v1.5` on first use (~1.3GB on
 #               disk + ~1.5GB RAM at runtime; Apple Silicon uses PyTorch
 #               MPS automatically).
@@ -71,7 +71,7 @@ _LOCAL_CACHE_DIR = Path(
 ).expanduser()
 
 # Embedding dimension. BGE-large native = 1024. Bumped from 384 (v1
-# all-MiniLM-L6-v2 + truncated Voyage) in v0.10.0 alongside the local-only
+# all-MiniLM-L6-v2 + truncated Voyage) in v0.9.2 alongside the local-only
 # refactor — see ADR 0001's 2026-05-20 amendment for rationale + plan #18.
 # Operators using AGENT_TOOLKIT_EMBEDDING_MODEL to swap models are
 # responsible for picking one with 1024-d native output (or for accepting
@@ -90,14 +90,14 @@ def _resolve_mode(arg_mode: str | None) -> str:
     """Resolve embedding mode. Default = local.
 
     Raises ValueError for unknown modes. The previously-supported "api"
-    mode was removed in v0.10.0 (see ADR 0001's 2026-05-20 amendment);
+    mode was removed in v0.9.2 (see ADR 0001's 2026-05-20 amendment);
     "api" produces a clear error pointing operators at the release
     notes.
     """
     if arg_mode:
         if arg_mode == "api":
             raise ValueError(
-                "API embedding mode was removed in agent-toolkit v0.10.0. "
+                "API embedding mode was removed in agent-toolkit v0.9.2. "
                 "Use --mode local (default) for sentence-transformers, or "
                 "--mode stub for tests. See ADR 0001's 2026-05-20 "
                 "amendment + plan #18 for rationale."
@@ -126,7 +126,7 @@ def _embed_local(text: str) -> list[float]:
     custom model via AGENT_TOOLKIT_EMBEDDING_MODEL override).
 
     Lazy-imports sentence-transformers — though it's a hard install dep
-    as of v0.10.0, lazy import keeps cold-start fast for callers using
+    as of v0.9.2, lazy import keeps cold-start fast for callers using
     only stub mode (e.g. CI smoke tests).
 
     Sets SENTENCE_TRANSFORMERS_HOME to _LOCAL_CACHE_DIR before importing
@@ -183,7 +183,7 @@ def embed_text(text: str, *, mode: str | None = None) -> list[float]:
         EmbeddingUnavailable: if local mode can't be served
             (sentence-transformers missing).
         ValueError: if mode is not local or stub. (API mode was removed
-            in v0.10.0; see ADR 0001's 2026-05-20 amendment.)
+            in v0.9.2; see ADR 0001's 2026-05-20 amendment.)
     """
     resolved = _resolve_mode(mode)
     if resolved == "local":
@@ -198,7 +198,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         prog="memory-embed",
         description=(
             "Embed text via local sentence-transformers (default) or stub. "
-            "API mode was removed in v0.10.0; see ADR 0001's 2026-05-20 "
+            "API mode was removed in v0.9.2; see ADR 0001's 2026-05-20 "
             "amendment for rationale."
         ),
     )

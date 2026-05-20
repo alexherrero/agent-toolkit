@@ -319,7 +319,7 @@ try {
             }
         }
         # embed.py stub mode produces deterministic 1024-d output
-        # (BGE-large native; bumped from 384 in v0.10.0 per plan #18 task 1).
+        # (BGE-large native; bumped from 384 in v0.9.2 per plan #18 task 1).
         $embedOut = python3 $embedPy 'smoke test text' '--mode' 'stub' 2>$null
         $embedOut = ($embedOut -join '').Trim()
         $parsed = $embedOut | ConvertFrom-Json
@@ -782,7 +782,7 @@ Archived content.
     # ── Embedding fallback path test (plan #18 task 1 — local-only refactor) ──
     Write-Host '==> Embedding fallback path test (plan #18 task 1)'
     # Test A: mode resolution — default → "local"; "api" raises ValueError with
-    # clear v0.10.0 error; unknown modes raise generic error.
+    # clear v0.9.2 error; unknown modes raise generic error.
     $resolveDefault = (python3 -c "import sys; sys.path.insert(0, r'$($scratch -replace '\\','/')/.claude/skills/memory/scripts'); from embed import _resolve_mode; print(_resolve_mode(None))").Trim()
     if ($resolveDefault -ne 'local') {
         throw "default mode resolution should be 'local', got '$resolveDefault'"
@@ -796,9 +796,9 @@ except ValueError as e:
     print(str(e))
 ").Trim()
     if ($apiErr -notmatch 'v0\.10\.0') {
-        throw "'api' mode should raise ValueError mentioning v0.10.0; got: $apiErr"
+        throw "'api' mode should raise ValueError mentioning v0.9.2; got: $apiErr"
     }
-    # Test A2: EMBEDDING_DIM is 1024 (BGE-large native; bumped from 384 in v0.10.0)
+    # Test A2: EMBEDDING_DIM is 1024 (BGE-large native; bumped from 384 in v0.9.2)
     $dim = (python3 -c "import sys; sys.path.insert(0, r'$($scratch -replace '\\','/')/.claude/skills/memory/scripts'); from embed import EMBEDDING_DIM; print(EMBEDDING_DIM)").Trim()
     if ($dim -ne '1024') {
         throw "EMBEDDING_DIM should be 1024 (BGE-large native), got '$dim'"
@@ -846,7 +846,7 @@ except ValueError as e:
         throw "AGENT_TOOLKIT_SENTENCE_TRANSFORMERS_CACHE override didn't apply ('$cacheOverride' != '$customCache')"
     }
     # Test E: recall.py with no sentence-transformers installed → grep-only
-    # fallback works (exit 0). Post-v0.10.0 there is no API mode to opt
+    # fallback works (exit 0). Post-v0.9.2 there is no API mode to opt
     # into, so this test only validates the no-local-model fallback.
     $mfb = Join-Path ([System.IO.Path]::GetTempPath()) ("toolkit-mfb-" + [System.Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path (Join-Path $mfb 'personal-private/workflow') -Force | Out-Null

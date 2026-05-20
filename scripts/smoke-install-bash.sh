@@ -425,7 +425,7 @@ for f in "$EMBED_PY" "$VEC_PY"; do
   fi
 done
 # Verify embed.py stub mode produces deterministic 1024-d output
-# (BGE-large native; bumped from 384 in v0.10.0 per plan #18 task 1).
+# (BGE-large native; bumped from 384 in v0.9.2 per plan #18 task 1).
 EMBED_OUT="$(python3 "$EMBED_PY" "smoke test text" --mode stub 2>/dev/null)"
 EMBED_LEN="$(echo "$EMBED_OUT" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)"
 if [[ "$EMBED_LEN" != "1024" ]]; then
@@ -975,13 +975,13 @@ fi
 rm -rf "$MQUERY"
 
 # ── Embedding fallback path test (plan #18 task 1 — local-only refactor) ───
-# Verify the v0.10.0 local-only design: default → local sentence-transformers;
+# Verify the v0.9.2 local-only design: default → local sentence-transformers;
 # stub mode for tests; "api" mode produces a clear error (was dropped in
-# v0.10.0 per ADR 0001's 2026-05-20 amendment).
+# v0.9.2 per ADR 0001's 2026-05-20 amendment).
 echo "==> Embedding fallback path test (plan #18 task 1)"
 EMBED_PY="$SCRATCH/.claude/skills/memory/scripts/embed.py"
 # Test A: mode resolution — default → "local"; "api" raises ValueError with
-# clear v0.10.0 error message; unknown modes raise generic error.
+# clear v0.9.2 error message; unknown modes raise generic error.
 RESOLVE_DEFAULT="$(python3 -c "
 import sys
 sys.path.insert(0, '$SCRATCH/.claude/skills/memory/scripts')
@@ -1002,11 +1002,11 @@ try:
 except ValueError as e:
     print(str(e))
 ")"
-if ! echo "$API_ERR" | grep -qE "v0.10.0"; then
-  echo "FAIL: 'api' mode should raise ValueError mentioning v0.10.0; got: $API_ERR" >&2
+if ! echo "$API_ERR" | grep -qE "v0.9.2"; then
+  echo "FAIL: 'api' mode should raise ValueError mentioning v0.9.2; got: $API_ERR" >&2
   exit 1
 fi
-# Test A2: EMBEDDING_DIM is 1024 (BGE-large native; bumped from 384 in v0.10.0)
+# Test A2: EMBEDDING_DIM is 1024 (BGE-large native; bumped from 384 in v0.9.2)
 DIM="$(python3 -c "
 import sys
 sys.path.insert(0, '$SCRATCH/.claude/skills/memory/scripts')
@@ -1081,7 +1081,7 @@ if [[ "$CACHE_OVERRIDE" != "$CUSTOM_CACHE" ]]; then
 fi
 # Test E: recall.py with no sentence-transformers installed → falls back
 # to grep-only cleanly (exit 0). This is the "offline + no local model"
-# degraded-graceful path. (Post-v0.10.0: there is no API mode to opt
+# degraded-graceful path. (Post-v0.9.2: there is no API mode to opt
 # into, so this test only validates the no-local-model fallback.)
 MFB="$(mktemp -d)"
 mkdir -p "$MFB/personal-private/workflow"
@@ -1118,7 +1118,7 @@ fi
 rm -rf "$MFB"
 
 # ── Local-mode integration test (plan #18 task 3) ──────────────────────────
-# Validates that embed.py with --mode local (the v0.10.0 default) returns
+# Validates that embed.py with --mode local (the v0.9.2 default) returns
 # a real 1024-d embedding when sentence-transformers + the BGE-large model
 # are available. Skipped in CI to avoid the ~1.3GB BGE-large model download
 # per workflow run (SKIP_LOCAL_MODE_INTEGRATION env var set by the three

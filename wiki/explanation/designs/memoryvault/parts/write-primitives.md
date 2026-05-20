@@ -36,7 +36,7 @@ The skill home is `agent-toolkit/skills/memory/SKILL.md` with full YAML frontmat
 None — foundational. All other parts depend on this one. The only pre-existing dependencies are:
 
 - **sqlite-vec** Python package (`pip install sqlite-vec`) — installed lazily on first save invocation; if missing, save still succeeds (file write is unconditional) but index update is deferred until the dep lands.
-- **Local `sentence-transformers`** — the only embedding mode as of v0.10.0 (see [ADR 0001's 2026-05-20 amendment](../../decisions/0001-agent-toolkit-purpose.md#amendment-2026-05-20)). Call is async (queued); first invocation downloads BGE-large (~1.3GB) lazily; subsequent calls are on-device + offline-capable. The save side is unconditional — file write never blocks on embedding state. Embedding implementation lives in the recall-loop part.
+- **Local `sentence-transformers`** — the only embedding mode as of v0.9.2 (see [ADR 0001's 2026-05-20 amendment](../../decisions/0001-agent-toolkit-purpose.md#amendment-2026-05-20)). Call is async (queued); first invocation downloads BGE-large (~1.3GB) lazily; subsequent calls are on-device + offline-capable. The save side is unconditional — file write never blocks on embedding state. Embedding implementation lives in the recall-loop part.
 
 ## Verification criteria
 

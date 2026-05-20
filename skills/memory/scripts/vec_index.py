@@ -23,7 +23,7 @@
 #     entry + leaves it for next drain.
 #   - File-write side (save.py / evolve.py) is NEVER blocked by either.
 #
-# Dimension-mismatch handling (v0.10.0, plan #18 task 2):
+# Dimension-mismatch handling (v0.9.2, plan #18 task 2):
 #   - The vec-index virtual table is created at EMBEDDING_DIM (currently
 #     1024 from embed.py; was 384 in v0.x).
 #   - On open, _open_index() introspects the existing virtual-table
@@ -278,7 +278,7 @@ def rebuild_index(vault_path: Path | str) -> dict:
     """Drop + recreate the vec-index virtual table at current EMBEDDING_DIM.
 
     Used after a toolkit upgrade that changes EMBEDDING_DIM (e.g. v0.9.0
-    → v0.10.0 bumped 384 → 1024 for the BGE-large default). Detection
+    → v0.9.2 bumped 384 → 1024 for the BGE-large default). Detection
     + warning happens automatically in _open_index(); this function
     is the operator-driven remediation.
 
@@ -482,7 +482,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
             "(process embedding queue), size (report index count), "
             "rebuild (drop + recreate at current EMBEDDING_DIM, used "
             "after toolkit upgrades that change embedding dimension; "
-            "see ADR 0001's 2026-05-20 amendment for the v0.10.0 "
+            "see ADR 0001's 2026-05-20 amendment for the v0.9.2 "
             "384 → 1024 bump)."
         ),
     )

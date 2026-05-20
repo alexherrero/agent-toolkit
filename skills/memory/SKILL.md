@@ -634,6 +634,6 @@ See the [parent design's 2026-05-16 Document History row](https://github.com/ale
 
 ## Status
 
-This skill is **stub-shipped** as of v0.9.0 (plan #7a part 1, task 1). All 4 sub-commands have documented shape + planned invocation but no functional implementation yet. The 4 sub-commands fill in across plan #7a tasks 2-5 + the 5 queued parts (recall-loop, reflection-and-recovery, idea-ledger, seed-pass, discovery-mining) which complete the v0.9.0 → v0.10.0 sequence.
+This skill is **stub-shipped** as of v0.9.0 (plan #7a part 1, task 1). All 4 sub-commands have documented shape + planned invocation but no functional implementation yet. The 4 sub-commands fill in across plan #7a tasks 2-5 + the 5 queued parts (recall-loop, reflection-and-recovery, idea-ledger, seed-pass, discovery-mining) which complete the v0.9.0 → v0.9.2 sequence.
 
 Until full bodies land, invoking any of the 4 sub-commands will surface a "Stub — full implementation lands in <task/part X>. See parent design at <link>." message rather than executing the operation.
