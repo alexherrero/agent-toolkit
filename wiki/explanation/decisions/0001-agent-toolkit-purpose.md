@@ -84,10 +84,53 @@ In v0.9.0 (2026-05-17), the toolkit dropped standalone Gemini CLI from supported
 
 This amendment does not supersede ADR 0001's central decision (the toolkit/harness split). It only narrows the host scope. See ADR 0006 for the full host-scope-reduction rationale + load-bearing assumptions for the reduction.
 
+## Amendment 2026-05-20
+
+**v0.10.0 — Local-only embeddings; BGE-large default.**
+
+> [!NOTE]
+> **Status:** accepted · **Date:** 2026-05-20 · **Source:** [ROADMAP item #18](https://github.com/alexherrero/agentic-harness/blob/main/.harness/ROADMAP.md). Implemented in plan #18 (inserted mid-flight of plan #7a part 5). See `agent-toolkit/skills/memory/scripts/embed.py` v0.10.0+ for the implementation; this amendment captures the design rationale.
+
+The original ADR 0001 (2026-05-12) implied — and the parent [MemoryVault design](../designs/memoryvault.md)'s locked design call **C2** made explicit — that the toolkit would ship both an API-based embedding path (Anthropic API routed through Voyage) and a local `sentence-transformers` fallback. The dual-mode posture was driven by the assumption that operators with API access would prefer it for quality while local mode existed as an offline-capable fallback.
+
+In v0.10.0 (2026-05-20), the API embedding mode was **dropped entirely**. The toolkit now ships a single embedding mode — local `sentence-transformers` — with the default model upgraded from `all-MiniLM-L6-v2` (384-d, MTEB English 56.3) to `BAAI/bge-large-en-v1.5` (1024-d, MTEB English 64.2). `EMBEDDING_DIM` bumped 384 → 1024. The original ADR text above is preserved as historical record. Forward-looking references to embedding modes should read as a single production mode: `local` (plus `stub` for tests).
+
+**Why this narrowing:**
+
+- The primary operator is a Claude Ultra subscriber without a separate Anthropic / Voyage API key — the API path was unreachable for the toolkit's actual user.
+- Dual-mode added surface area (mode resolution, env-var contract, dim-truncation, two test paths) without providing value for the personal-dev-env use case.
+- Modern small-to-mid-size local models (BGE-large family, mxbai, nomic-embed) deliver near-SOTA MTEB results on desktop-class hardware (M-series + 64GB RAM) — the quality gap that motivated dual-mode is no longer load-bearing.
+
+**Why not the alternatives:**
+
+- *Keep dual-mode + flip the default to local.* Rejected — the surface area of "two paths" is the cost we wanted to eliminate; making one the default doesn't help.
+- *Drop both API and local; require operator to BYO embedding.* Rejected — the toolkit's value depends on out-of-the-box recall functionality.
+- *Default to a smaller model (e.g. keep `all-MiniLM-L6-v2`).* Rejected — the operator's desktop-class hardware runs BGE-large with no perceived overhead, and the MTEB quality gap is meaningful for the recall use case.
+- *Write a new ADR 0007.* Rejected (operator decision 2026-05-20) — the change is a scope narrowing of the same architectural decision captured in ADR 0001; amending preserves the audit trail without splitting the discussion across two ADRs.
+
+**Operational changes shipped in v0.10.0:**
+
+- `sentence-transformers` becomes a hard install dep (was optional fallback). `install.sh` + `install.ps1` pip-install it by default from `requirements.txt`; opt-out via `--no-python-deps` / `-NoPythonDeps`.
+- `vec_index.py` gained dim-mismatch detection + a `rebuild` subcommand. Operators who upgrade from v0.9.x on top of an existing 384-d index see a clear stderr warning + a manual remediation command — never silent corruption.
+- All `VOYAGE_API_KEY` / `ANTHROPIC_API_KEY` env var reads removed from `embed.py`. `MEMORY_USE_API_EMBEDDINGS` env var no longer consulted.
+- New `AGENT_TOOLKIT_EMBEDDING_MODEL` env var as escape hatch for swapping local models (still local-only — no API option ever).
+- Smoke install split: CI runs with `--no-python-deps` + `SKIP_LOCAL_MODE_INTEGRATION` to avoid the ~1.3GB BGE-large download per workflow run; operators get the full pip-install + first-run download on their own machine.
+
+**Load-bearing assumptions** (re-audit on every roadmap milestone, especially when bringing a new operator onto the toolkit):
+
+1. **Operator hardware is desktop-class.** Toolkit defaults assume M-series + 64GB-RAM (or equivalent). Operators on low-spec hosts swap to a smaller model via `AGENT_TOOLKIT_EMBEDDING_MODEL`. **Re-audit trigger:** if low-spec-host complaints become a recurring pattern, change the default or document the swap pattern prominently in `Use-The-Memory-Skill.md`.
+2. **PyTorch MPS backend works on Apple Silicon** for sentence-transformers's underlying inference. If a PyTorch release breaks MPS, local-mode degrades to CPU — still fast on M-series + 64GB, just non-accelerated. **Re-audit trigger:** PyTorch major-version bump + operator-perceived perf regression.
+3. **`sentence-transformers` stays maintained.** It's a widely-used library with strong upstream support, but if the project is abandoned or pivots in an incompatible way, the toolkit needs a swap (candidates: direct PyTorch + tokenizers integration; or move to `transformers` library directly). **Re-audit trigger:** sentence-transformers stops shipping releases for 6+ months, OR drops support for the BGE-large family.
+4. **The MemoryVault design's C2 (dual-mode embeddings) is superseded by this amendment for v0.10.0+.** The design doc still narrates dual-mode in places that describe the v1 implementation timeline; readers should treat any "Anthropic API by default" reference as historical context, not current behavior. A future docs pass may rewrite the design doc body; for now, the amendment is the source of truth.
+
+This amendment does not supersede ADR 0001's central decision (the toolkit/harness split or the PII-guardrails framing). It narrows the embedding-mode scope from `{api, local, stub}` to `{local, stub}` and locks the operator-config assumption to desktop-class hardware.
+
 ## Related
 
 - [agentic-harness ADR 0006](https://github.com/alexherrero/agentic-harness/blob/main/wiki/explanation/decisions/0006-agent-toolkit-split.md) — the sibling decision in the harness repo, focused on the harness-side framing.
-- [ADR 0006 (agent-toolkit) — Gemini CLI host removal](0006-gemini-cli-host-removal) — the host-scope-reduction rationale that this amendment cross-references.
+- [ADR 0006 (agent-toolkit) — Gemini CLI host removal](0006-gemini-cli-host-removal) — the host-scope-reduction rationale that the 2026-05-17 amendment cross-references.
+- [MemoryVault design](../designs/memoryvault.md) — parent design doc; locked design call C2 (dual-mode embeddings) is superseded by the 2026-05-20 amendment.
+- [agentic-harness ROADMAP item #18](https://github.com/alexherrero/agentic-harness/blob/main/.harness/ROADMAP.md) — the inserting-mid-flight context for plan #18 (local-only embeddings).
 - [Purpose and scope](Purpose-And-Scope) — narrative summary of what this repo is for.
 - [Manifest schema reference](Manifest-Schema) — the YAML frontmatter contract.
 - [Per-host paths reference](Per-Host-Paths) — how each `kind` maps to a host destination at install time.
