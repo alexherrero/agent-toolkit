@@ -501,8 +501,10 @@ fi
 
 # Rebuild subcommand test (plan #18 task 2): drop + recreate at current
 # EMBEDDING_DIM. Outcome again depends on sqlite-vec availability.
-REBUILD_OUT="$(python3 "$VEC_PY" --vault-path "$MQUEUE" rebuild 2>/dev/null)"
-REBUILD_EXIT=$?
+# Note: capture exit code via `|| REBUILD_EXIT=$?` form so `set -e` doesn't
+# kill the script on the expected exit-2 graceful-skip path.
+REBUILD_EXIT=0
+REBUILD_OUT="$(python3 "$VEC_PY" --vault-path "$MQUEUE" rebuild 2>/dev/null)" || REBUILD_EXIT=$?
 if [[ $REBUILD_EXIT -eq 0 ]]; then
   # Full happy path: rebuild reports old_dim + new_dim=1024.
   NEW_DIM="$(echo "$REBUILD_OUT" | python3 -c "import json,sys; print(json.load(sys.stdin).get('new_dim'))")"
