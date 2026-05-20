@@ -795,7 +795,7 @@ try:
 except ValueError as e:
     print(str(e))
 ").Trim()
-    if ($apiErr -notmatch 'v0\.10\.0') {
+    if ($apiErr -notmatch 'v0\.9\.2') {
         throw "'api' mode should raise ValueError mentioning v0.9.2; got: $apiErr"
     }
     # Test A2: EMBEDDING_DIM is 1024 (BGE-large native; bumped from 384 in v0.9.2)
