@@ -424,11 +424,12 @@ for f in "$EMBED_PY" "$VEC_PY"; do
     exit 1
   fi
 done
-# Verify embed.py stub mode produces deterministic 384-d output.
+# Verify embed.py stub mode produces deterministic 1024-d output
+# (BGE-large native; bumped from 384 in v0.10.0 per plan #18 task 1).
 EMBED_OUT="$(python3 "$EMBED_PY" "smoke test text" --mode stub 2>/dev/null)"
 EMBED_LEN="$(echo "$EMBED_OUT" | python3 -c "import json,sys; print(len(json.load(sys.stdin)))" 2>/dev/null || echo 0)"
-if [[ "$EMBED_LEN" != "384" ]]; then
-  echo "FAIL: embed.py stub mode returned $EMBED_LEN-d output, expected 384" >&2
+if [[ "$EMBED_LEN" != "1024" ]]; then
+  echo "FAIL: embed.py stub mode returned $EMBED_LEN-d output, expected 1024" >&2
   rm -rf "$MQUEUE"
   exit 1
 fi

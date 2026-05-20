@@ -318,12 +318,13 @@ try {
                 throw "$f not installed"
             }
         }
-        # embed.py stub mode produces deterministic 384-d output
+        # embed.py stub mode produces deterministic 1024-d output
+        # (BGE-large native; bumped from 384 in v0.10.0 per plan #18 task 1).
         $embedOut = python3 $embedPy 'smoke test text' '--mode' 'stub' 2>$null
         $embedOut = ($embedOut -join '').Trim()
         $parsed = $embedOut | ConvertFrom-Json
-        if ($parsed.Count -ne 384) {
-            throw "embed.py stub mode returned $($parsed.Count)-d output, expected 384"
+        if ($parsed.Count -ne 1024) {
+            throw "embed.py stub mode returned $($parsed.Count)-d output, expected 1024"
         }
         # Save 3 entries; queue should grow by 3
         for ($i = 1; $i -le 3; $i++) {
