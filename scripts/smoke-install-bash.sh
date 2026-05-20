@@ -498,10 +498,10 @@ else
   exit 1
 fi
 # Verify file write is never blocked even with no embedding mode available.
-# Save with MEMORY_USE_API_EMBEDDINGS=true but no API key — save still works.
-unset ANTHROPIC_API_KEY VOYAGE_API_KEY MEMORY_USE_API_EMBEDDINGS
-echo "No-API body." | python3 "$SAVE_PY" preferences no-api-test --vault-path "$MQUEUE" >/dev/null 2>&1
-if [[ ! -f "$MQUEUE/personal-private/preferences/no-api-test.md" ]]; then
+# Save with no sentence-transformers installed (local mode unavailable) —
+# save still works because the embedding is async + graceful-skip.
+echo "No-embed body." | python3 "$SAVE_PY" preferences no-embed-test --vault-path "$MQUEUE" >/dev/null 2>&1
+if [[ ! -f "$MQUEUE/personal-private/preferences/no-embed-test.md" ]]; then
   echo "FAIL: save failed when no embedding mode available (file write should NEVER be blocked)" >&2
   rm -rf "$MQUEUE"
   exit 1
@@ -911,34 +911,69 @@ if [[ -n "$Q9_OUT" ]]; then
 fi
 rm -rf "$MQUERY"
 
-# ── Embedding fallback path test (plan #7a part 2 task 4) ──────────────────
-# Verify the locked-design-call D3 fallback chain: API default → local
-# sentence-transformers when MEMORY_USE_API_EMBEDDINGS=false → grep-only
-# when neither available. The local mode is shipped in v1 (already
-# implemented in plan #7a part 1 task 4 via embed.py's "local" mode;
-# task 4 of part 2 added the explicit ~/.cache/agent-toolkit/
-# sentence-transformers/ cache path + verifies the end-to-end toggle).
-echo "==> Embedding fallback path test (plan #7a part 2 task 4)"
+# ── Embedding fallback path test (plan #18 task 1 — local-only refactor) ───
+# Verify the v0.10.0 local-only design: default → local sentence-transformers;
+# stub mode for tests; "api" mode produces a clear error (was dropped in
+# v0.10.0 per ADR 0001's 2026-05-20 amendment).
+echo "==> Embedding fallback path test (plan #18 task 1)"
 EMBED_PY="$SCRATCH/.claude/skills/memory/scripts/embed.py"
-# Test A: env var resolution chain — unset → "api", "false" → "local"
-RESOLVE_DEFAULT="$(unset MEMORY_USE_API_EMBEDDINGS; python3 -c "
+# Test A: mode resolution — default → "local"; "api" raises ValueError with
+# clear v0.10.0 error message; unknown modes raise generic error.
+RESOLVE_DEFAULT="$(python3 -c "
 import sys
 sys.path.insert(0, '$SCRATCH/.claude/skills/memory/scripts')
 from embed import _resolve_mode
 print(_resolve_mode(None))
 ")"
-if [[ "$RESOLVE_DEFAULT" != "api" ]]; then
-  echo "FAIL: default mode resolution should be 'api', got '$RESOLVE_DEFAULT'" >&2
+if [[ "$RESOLVE_DEFAULT" != "local" ]]; then
+  echo "FAIL: default mode resolution should be 'local', got '$RESOLVE_DEFAULT'" >&2
   exit 1
 fi
-RESOLVE_LOCAL="$(MEMORY_USE_API_EMBEDDINGS=false python3 -c "
+API_ERR="$(python3 -c "
 import sys
 sys.path.insert(0, '$SCRATCH/.claude/skills/memory/scripts')
 from embed import _resolve_mode
-print(_resolve_mode(None))
+try:
+    _resolve_mode('api')
+    print('NO_ERROR')
+except ValueError as e:
+    print(str(e))
 ")"
-if [[ "$RESOLVE_LOCAL" != "local" ]]; then
-  echo "FAIL: MEMORY_USE_API_EMBEDDINGS=false should resolve to 'local', got '$RESOLVE_LOCAL'" >&2
+if ! echo "$API_ERR" | grep -qE "v0.10.0"; then
+  echo "FAIL: 'api' mode should raise ValueError mentioning v0.10.0; got: $API_ERR" >&2
+  exit 1
+fi
+# Test A2: EMBEDDING_DIM is 1024 (BGE-large native; bumped from 384 in v0.10.0)
+DIM="$(python3 -c "
+import sys
+sys.path.insert(0, '$SCRATCH/.claude/skills/memory/scripts')
+from embed import EMBEDDING_DIM
+print(EMBEDDING_DIM)
+")"
+if [[ "$DIM" != "1024" ]]; then
+  echo "FAIL: EMBEDDING_DIM should be 1024 (BGE-large native), got '$DIM'" >&2
+  exit 1
+fi
+# Test A3: stub mode returns 1024-d deterministic vector
+STUB_LEN="$(python3 -c "
+import sys, json
+sys.path.insert(0, '$SCRATCH/.claude/skills/memory/scripts')
+from embed import embed_text
+print(len(embed_text('test', mode='stub')))
+")"
+if [[ "$STUB_LEN" != "1024" ]]; then
+  echo "FAIL: stub mode should return 1024-d vector, got $STUB_LEN" >&2
+  exit 1
+fi
+# Test A4: AGENT_TOOLKIT_EMBEDDING_MODEL env var escape hatch works
+MODEL_OVERRIDE="$(AGENT_TOOLKIT_EMBEDDING_MODEL=test-model python3 -c "
+import sys
+sys.path.insert(0, '$SCRATCH/.claude/skills/memory/scripts')
+from embed import _resolve_model
+print(_resolve_model())
+")"
+if [[ "$MODEL_OVERRIDE" != "test-model" ]]; then
+  echo "FAIL: AGENT_TOOLKIT_EMBEDDING_MODEL override should yield 'test-model', got '$MODEL_OVERRIDE'" >&2
   exit 1
 fi
 # Test B: embed.py --mode local with no sentence-transformers → graceful
@@ -981,9 +1016,10 @@ if [[ "$CACHE_OVERRIDE" != "$CUSTOM_CACHE" ]]; then
   echo "FAIL: AGENT_TOOLKIT_SENTENCE_TRANSFORMERS_CACHE env override didn't apply ('$CACHE_OVERRIDE' != '$CUSTOM_CACHE')" >&2
   exit 1
 fi
-# Test E: recall.py with MEMORY_USE_API_EMBEDDINGS=false + no sentence-
-# transformers + no API key → falls back to grep-only cleanly (exit 0).
-# This is the "offline + no local model" degraded-graceful path.
+# Test E: recall.py with no sentence-transformers installed → falls back
+# to grep-only cleanly (exit 0). This is the "offline + no local model"
+# degraded-graceful path. (Post-v0.10.0: there is no API mode to opt
+# into, so this test only validates the no-local-model fallback.)
 MFB="$(mktemp -d)"
 mkdir -p "$MFB/personal-private/workflow"
 cat > "$MFB/personal-private/workflow/fb-entry.md" << 'FB_EOF'
@@ -995,8 +1031,7 @@ tags: [evolve, fallback]
 ---
 Evolve test body for fallback path.
 FB_EOF
-unset ANTHROPIC_API_KEY VOYAGE_API_KEY
-FB_OUT="$(MEMORY_USE_API_EMBEDDINGS=false python3 "$RECALL_PY" --vault-path "$MFB" query "evolve" 2>&1)"
+FB_OUT="$(python3 "$RECALL_PY" --vault-path "$MFB" query "evolve" 2>&1)"
 FB_EXIT=$?
 if [[ $FB_EXIT -ne 0 ]]; then
   echo "FAIL: recall.py fallback path exited $FB_EXIT (expected 0 for graceful grep-only)" >&2

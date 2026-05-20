@@ -369,13 +369,10 @@ try {
         } else {
             throw "drain produced unexpected outcome (processed=$($drainParsed.processed), skipped=$($drainParsed.skipped), errors=$($drainParsed.errors))"
         }
-        # File write never blocked: no API key + no local model → save still succeeds
-        Remove-Item -Path Env:ANTHROPIC_API_KEY -ErrorAction SilentlyContinue
-        Remove-Item -Path Env:VOYAGE_API_KEY -ErrorAction SilentlyContinue
-        Remove-Item -Path Env:MEMORY_USE_API_EMBEDDINGS -ErrorAction SilentlyContinue
-        'No-API body.' | python3 $savePy 'preferences' 'no-api-test' '--vault-path' $mqueue 2>$null | Out-Null
-        $noApiPath = Join-Path $mqueue 'personal-private/preferences/no-api-test.md'
-        if (-not (Test-Path -LiteralPath $noApiPath)) {
+        # File write never blocked: no local model installed → save still succeeds
+        'No-embed body.' | python3 $savePy 'preferences' 'no-embed-test' '--vault-path' $mqueue 2>$null | Out-Null
+        $noEmbedPath = Join-Path $mqueue 'personal-private/preferences/no-embed-test.md'
+        if (-not (Test-Path -LiteralPath $noEmbedPath)) {
             throw 'save failed when no embedding mode available (file write should NEVER be blocked)'
         }
     } finally {
@@ -734,21 +731,41 @@ Archived content.
         Remove-Item -LiteralPath $mquery -Recurse -Force -ErrorAction SilentlyContinue
     }
 
-    # ── Embedding fallback path test (plan #7a part 2 task 4) ──────────────
-    Write-Host '==> Embedding fallback path test (plan #7a part 2 task 4)'
-    # Test A: env var resolution chain
-    $resolveDefault = (& {
-        Remove-Item -Path Env:MEMORY_USE_API_EMBEDDINGS -ErrorAction SilentlyContinue
-        python3 -c "import sys; sys.path.insert(0, r'$($scratch -replace '\\','/')/.claude/skills/memory/scripts'); from embed import _resolve_mode; print(_resolve_mode(None))"
-    }).Trim()
-    if ($resolveDefault -ne 'api') {
-        throw "default mode resolution should be 'api', got '$resolveDefault'"
+    # ── Embedding fallback path test (plan #18 task 1 — local-only refactor) ──
+    Write-Host '==> Embedding fallback path test (plan #18 task 1)'
+    # Test A: mode resolution — default → "local"; "api" raises ValueError with
+    # clear v0.10.0 error; unknown modes raise generic error.
+    $resolveDefault = (python3 -c "import sys; sys.path.insert(0, r'$($scratch -replace '\\','/')/.claude/skills/memory/scripts'); from embed import _resolve_mode; print(_resolve_mode(None))").Trim()
+    if ($resolveDefault -ne 'local') {
+        throw "default mode resolution should be 'local', got '$resolveDefault'"
     }
-    $env:MEMORY_USE_API_EMBEDDINGS = 'false'
-    $resolveLocal = (python3 -c "import sys; sys.path.insert(0, r'$($scratch -replace '\\','/')/.claude/skills/memory/scripts'); from embed import _resolve_mode; print(_resolve_mode(None))").Trim()
-    Remove-Item -Path Env:MEMORY_USE_API_EMBEDDINGS -ErrorAction SilentlyContinue
-    if ($resolveLocal -ne 'local') {
-        throw "MEMORY_USE_API_EMBEDDINGS=false should resolve to 'local', got '$resolveLocal'"
+    $apiErr = (python3 -c "import sys; sys.path.insert(0, r'$($scratch -replace '\\','/')/.claude/skills/memory/scripts')
+from embed import _resolve_mode
+try:
+    _resolve_mode('api')
+    print('NO_ERROR')
+except ValueError as e:
+    print(str(e))
+").Trim()
+    if ($apiErr -notmatch 'v0\.10\.0') {
+        throw "'api' mode should raise ValueError mentioning v0.10.0; got: $apiErr"
+    }
+    # Test A2: EMBEDDING_DIM is 1024 (BGE-large native; bumped from 384 in v0.10.0)
+    $dim = (python3 -c "import sys; sys.path.insert(0, r'$($scratch -replace '\\','/')/.claude/skills/memory/scripts'); from embed import EMBEDDING_DIM; print(EMBEDDING_DIM)").Trim()
+    if ($dim -ne '1024') {
+        throw "EMBEDDING_DIM should be 1024 (BGE-large native), got '$dim'"
+    }
+    # Test A3: stub mode returns 1024-d deterministic vector
+    $stubLen = (python3 -c "import sys; sys.path.insert(0, r'$($scratch -replace '\\','/')/.claude/skills/memory/scripts'); from embed import embed_text; print(len(embed_text('test', mode='stub')))").Trim()
+    if ($stubLen -ne '1024') {
+        throw "stub mode should return 1024-d vector, got $stubLen"
+    }
+    # Test A4: AGENT_TOOLKIT_EMBEDDING_MODEL env var escape hatch works
+    $env:AGENT_TOOLKIT_EMBEDDING_MODEL = 'test-model'
+    $modelOverride = (python3 -c "import sys; sys.path.insert(0, r'$($scratch -replace '\\','/')/.claude/skills/memory/scripts'); from embed import _resolve_model; print(_resolve_model())").Trim()
+    Remove-Item -Path Env:AGENT_TOOLKIT_EMBEDDING_MODEL -ErrorAction SilentlyContinue
+    if ($modelOverride -ne 'test-model') {
+        throw "AGENT_TOOLKIT_EMBEDDING_MODEL override should yield 'test-model', got '$modelOverride'"
     }
     # Test B: embed.py --mode local with no sentence-transformers → exit 2
     $embedPy = Join-Path $scratch '.claude/skills/memory/scripts/embed.py'
@@ -780,8 +797,9 @@ Archived content.
     if (-not ($cacheOverride.Replace('\','/') -ieq $customCache.Replace('\','/'))) {
         throw "AGENT_TOOLKIT_SENTENCE_TRANSFORMERS_CACHE override didn't apply ('$cacheOverride' != '$customCache')"
     }
-    # Test E: recall.py with MEMORY_USE_API_EMBEDDINGS=false + no sentence-
-    # transformers + no API key → grep-only fallback works (exit 0).
+    # Test E: recall.py with no sentence-transformers installed → grep-only
+    # fallback works (exit 0). Post-v0.10.0 there is no API mode to opt
+    # into, so this test only validates the no-local-model fallback.
     $mfb = Join-Path ([System.IO.Path]::GetTempPath()) ("toolkit-mfb-" + [System.Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path (Join-Path $mfb 'personal-private/workflow') -Force | Out-Null
     try {
@@ -795,13 +813,9 @@ tags: [evolve, fallback]
 Evolve test body for fallback path.
 "@ | Out-File -FilePath (Join-Path $mfb 'personal-private/workflow/fb-entry.md') -Encoding utf8
 
-        Remove-Item -Path Env:ANTHROPIC_API_KEY -ErrorAction SilentlyContinue
-        Remove-Item -Path Env:VOYAGE_API_KEY -ErrorAction SilentlyContinue
-        $env:MEMORY_USE_API_EMBEDDINGS = 'false'
         $fbStdoutFile = Join-Path $mfb '.fb-stdout.log'
         $fbStderrFile = Join-Path $mfb '.fb-stderr.log'
         $fbProc = Start-Process -FilePath 'python3' -ArgumentList @($recallPy, '--vault-path', $mfb, 'query', 'evolve') -NoNewWindow -Wait -RedirectStandardOutput $fbStdoutFile -RedirectStandardError $fbStderrFile -PassThru
-        Remove-Item -Path Env:MEMORY_USE_API_EMBEDDINGS -ErrorAction SilentlyContinue
         if ($fbProc.ExitCode -ne 0) {
             throw "recall.py fallback path exited $($fbProc.ExitCode); expected 0 for grep-only"
         }
