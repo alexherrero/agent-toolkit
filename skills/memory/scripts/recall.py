@@ -66,10 +66,19 @@ DEFAULT_K = 5
 
 # Merge formula weights (per locked design call — recall-loop.md):
 #   combined = sim × SIM_WEIGHT + keyword × KEYWORD_WEIGHT
-# These are the guess-and-tune values per Tech Debt #7; ship instrumented
-# and refine from real use (see /memory inspect, future work).
-SIM_WEIGHT = 0.7
-KEYWORD_WEIGHT = 0.3
+# Tuned 2026-05-20 during plan #7a part 5 task 6 (seed-pass validation)
+# against 47 seeded entries + 10 sample queries. The original 0.7/0.3
+# values over-weighted unbounded keyword counts: 3 of 10 queries had the
+# highest-sim target NOT at #1 because raw-count keyword matches in tangential
+# entries (4-6 token overlaps on common words like "convention" / "phase" /
+# "report") pushed them above the higher-sim true target by 0.1+ on the
+# combined score. Re-tuned to sim-dominant 0.85/0.05 — semantic similarity
+# carries the ranking; raw keyword count contributes as a small tiebreaker
+# rather than a primary signal. All 10 sample queries now hit top-1 (or
+# correctly miss for the off-vault query). See PLAN.md task 6 narrative for
+# the full validation log.
+SIM_WEIGHT = 0.85
+KEYWORD_WEIGHT = 0.05
 
 # Path convention: always-load entries live under <vault>/personal-private/_always-load/.
 # Group-scoped _always-load/ dirs (e.g. work-public/_always-load/) are reserved
